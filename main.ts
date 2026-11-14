@@ -1,14 +1,16 @@
 // Token Radar (radar-2): a token-launch radar for the make.fun bounty.
 //
-// The program reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), scores
-// every pre-token protocol with the model in lib/model.ts, writes the ranked board to
-// /output/board.json, and copies this repository's dashboard/ and screenshots/ to /output. Last, it
-// writes /output/dossier.json, the summary the judge reads, with the vendored make.fun library.
+// The program reads the sealed snapshot from /input/snapshot.json (or --input
+// <file|dir>), scores every pre-token protocol with the model in lib/model.ts, writes
+// the ranked board to /output/board.json, and copies this repository's dashboard/ and
+// screenshots/ to /output. Last, it writes /output/dossier.json, the summary the judge
+// reads, with the vendored make.fun library.
 //
-// The dashboard is a static page, no framework and no network: dashboard/index.html, dashboard/app.css
-// and dashboard/app.js read /output/data.js, which this program writes from the same board. The board
-// covers the whole watchlist plus every rankable pre-token protocol below the watchlist floor, and the
-// page states the model and gives every protocol a farm plan.
+// The dashboard is a static page, no framework and no network: dashboard/index.html,
+// dashboard/app.css and dashboard/app.js read /output/data.js, which this program
+// writes from the same board. The board covers the whole watchlist plus every
+// rankable pre-token protocol below the watchlist floor, and the page states the model
+// and gives every protocol a farm plan.
 //
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input ../input/snapshot.json
