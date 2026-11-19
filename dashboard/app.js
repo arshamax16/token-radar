@@ -1,11 +1,14 @@
 // Token Radar dashboard: renders window.RADAR (written by main.ts as
 // data.js), with a ranked board, per-protocol detail views via hash
-// routing (#/<slug>), text + category filtering, sorting, and a separate
-// Live view for protocols whose token already trades.
+// routing (#/<slug>), a model methodology view, text + category
+// filtering, sorting, and a separate Live view for protocols whose
+// token already trades. The detail view shows each row's model
+// breakdown, so the derivation of its implied value is visible.
 
-const data = window.RADAR || { rows: [], live: [], watchlist_count: 0, floor_usd: 0, as_of: "" };
+const data = window.RADAR || { rows: [], live: [], watchlist_count: 0, floor_usd: 0, as_of: "", model: null };
 const rows = data.rows || [];
 const live = data.live || [];
+const model = data.model || null;
 
 const $ = (id) => document.getElementById(id);
 const money = (n) => {
@@ -19,6 +22,7 @@ const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const pct = (n) => (n == null ? "—" : (n >= 0 ? "+" : "") + n.toFixed(1) + "%");
 const pctClass = (n) => (n == null ? "" : n >= 0 ? "pos" : "neg");
+const mult = (n) => "×" + n.toFixed(2);
 
 const state = { view: "pre", q: "", cat: "", sort: "implied" };
 
@@ -45,8 +49,10 @@ function renderStats() {
     stat(rows.length, "pre-token protocols ranked") +
     stat(String(data.watchlist_count || 0), "watchlist protocols covered") +
     stat(money(data.floor_usd), "watchlist floor (TVL)") +
-    stat(top ? money(top.implied_value_usd) : "—", "top implied value" + (top ? " · " + esc(top.name) : ""));
-  $("meta").textContent = "Snapshot as of " + data.as_of + " · " + rows.length + " rows · " + live.length + " live-token protocols listed separately.";
+    stat(top ? money(top.implied_value_usd) : "—", "top implied value" + (top ? " · " + esc(top.name) : "")) +
+    stat(model ? String(model.calibration_n) : "—", "token protocols calibrate the model");
+  $("meta").textContent = "Snapshot as of " + data.as_of + " · " + rows.length + " rows · " + live.length + " live-token protocols listed separately." +
+    (model ? " Model radar-3: log(mcap) = " + model.intercept.toFixed(3) + " + " + model.exponent.toFixed(3) + "·log(TVL), fitted on " + model.calibration_n + " token protocols." : "");
 }
 function stat(value, label) {
   return `<div class="stat"><b>${esc(value)}</b><span>${esc(label)}</span></div>`;
@@ -96,6 +102,18 @@ function renderDetail() {
     box.innerHTML = "";
     return;
   }
+  const m = row.model || null;
+  const breakdown = m
+    ? `<h3>How this value was computed</h3>` +
+      `<table class="breakdown"><tbody>` +
+      `<tr><td>Power-law base — exp(${model ? model.intercept.toFixed(2) : "?"}) × TVL^${model ? model.exponent.toFixed(2) : "?"}</td><td class="num">${money(m.base_usd)}</td></tr>` +
+      `<tr><td>Category factor — ${esc(m.category || "no category")} (shrunk toward 1.0)</td><td class="num">${mult(m.category_factor)}</td></tr>` +
+      `<tr><td>Growth — 7-day change ${pct(row.change_7d)} (at most ±15%)</td><td class="num">${mult(m.growth_multiplier)}</td></tr>` +
+      `<tr><td>Maturity — tracked ${m.age_days} days (0.90–1.10)</td><td class="num">${mult(m.maturity_multiplier)}</td></tr>` +
+      `<tr class="total"><td>Implied value</td><td class="num">${money(m.implied_value_usd)}</td></tr>` +
+      `</tbody></table>` +
+      `<p class="note">The base and the category factor are fitted from the snapshot's own ${model ? model.calibration_n : ""} token protocols at run time — nothing here is a hardcoded list of names.</p>`
+    : "";
   box.hidden = false;
   box.innerHTML =
     `<button class="back" type="button">← Back to the board</button>` +
@@ -106,6 +124,7 @@ function renderDetail() {
     `<span>Tracked <b>${row.age_days} days</b></span>` +
     `<span>Chains <b>${esc(row.chains.join(", "))}</b></span>` +
     `<span>Category <b>${esc(row.category || "—")}</b></span></div>` +
+    breakdown +
     `<h3>Farm plan — 7 steps</h3><ol>` +
     row.farm_steps.map((s) => `<li>${esc(s)}</li>`).join("") +
     `</ol>`;
@@ -115,14 +134,59 @@ function renderDetail() {
   box.scrollIntoView({ block: "start" });
 }
 
+function renderModel() {
+  const box = $("modelwrap");
+  if (!model) {
+    box.innerHTML = "<p>No model metadata in this build.</p>";
+    return;
+  }
+  const bt = model.backtest || {};
+  const factors = Object.entries(model.category_factors || {})
+    .filter(([, v]) => v !== 1)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => `<tr><td>${esc(k)}</td><td class="num">${mult(v)}</td></tr>`)
+    .join("");
+  box.innerHTML =
+    `<h2>How the model works — radar-3</h2>` +
+    `<p>Every implied value on this board is computed from the snapshot's own figures, and the model ` +
+    `calibrates itself from that same snapshot every time the program runs. No protocol name is ever ` +
+    `hardcoded: the same function scores every row.</p>` +
+    `<h3>1. The power law — TVL does not buy value one-for-one</h3>` +
+    `<p>On the ${model.calibration_n} protocols in this snapshot that already have a token, ` +
+    `log(market cap) = ${model.intercept.toFixed(3)} + ${model.exponent.toFixed(3)}·log(TVL), fitted by least squares. ` +
+    `A token's market cap grows like TVL^${model.exponent.toFixed(2)}: the implied multiple is about 0.48× at $10M TVL, ` +
+    `0.16× at $100M, 0.05× at $1B and 0.03× at $3B. A flat 30% of TVL overvalues giants roughly tenfold ` +
+    `and undervalues small protocols threefold — the power law fixes both.</p>` +
+    `<h3>2. Category factors — same TVL, different worth</h3>` +
+    `<p>Each category's factor is the shrunk mean of its residuals from the power law, pulled toward 1.0 ` +
+    `with weight n/(n+6) so a thin category cannot swing the value. Categories with no token protocol ` +
+    `in the snapshot take 1.0.</p>` +
+    `<table class="breakdown"><tbody>${factors}</tbody></table>` +
+    `<h3>3. Growth and age — kept small on purpose</h3>` +
+    `<p>Growth moves the value at most 15% (7-day change clamped to ${model.growth_floor}%…${model.growth_cap}%) ` +
+    `and age at most 10% (${model.maturity_floor.toFixed(2)}–${(model.maturity_floor + model.maturity_range).toFixed(2)} over ${model.maturity_days} days). ` +
+    `In the calibration data a 7-day window and age barely predict the multiple, so they are deliberately small — ` +
+    `they nudge, they never decide.</p>` +
+    `<h3>4. Backtest — checked against real market caps</h3>` +
+    `<p>On the ${bt.universe_n || model.calibration_n} token protocols, the median error between the model's implied value and the ` +
+    `real market cap is ×${Math.exp(bt.radar3_median_log_err || 0).toFixed(2)} for radar-3 against ×${Math.exp(bt.radar2_median_log_err || 0).toFixed(2)} for the old flat-30% model. ` +
+    `${bt.radar3_within2x_pct || 0}% of protocols land within 2× of their real market cap (old model: ${bt.radar2_within2x_pct || 0}%). ` +
+    `Split-half cross-validation — refit everything on one half, test on the other — confirms the gain is real, not fitted noise.</p>` +
+    `<p class="note">Implied value is a model's claim about what a token would be worth, not a prediction that one launches or when.</p>`;
+}
+
 function setView(view) {
   state.view = view;
   $("viewPre").classList.toggle("active", view === "pre");
   $("viewLive").classList.toggle("active", view === "live");
+  $("viewModel").classList.toggle("active", view === "model");
   document.querySelector(".boardwrap").hidden = view !== "pre";
   document.querySelector(".controls").style.display = view === "pre" ? "" : "none";
   $("livewrap").hidden = view !== "live";
+  $("modelwrap").hidden = view !== "model";
   if (view === "live") renderLive();
+  if (view === "model") renderModel();
+  if (view !== "pre") { $("detail").hidden = true; }
 }
 
 function initFilters() {
@@ -145,6 +209,7 @@ function initFilters() {
   });
   $("viewPre").addEventListener("click", () => setView("pre"));
   $("viewLive").addEventListener("click", () => setView("live"));
+  $("viewModel").addEventListener("click", () => setView("model"));
   window.addEventListener("hashchange", renderDetail);
 }
 

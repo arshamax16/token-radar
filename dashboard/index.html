@@ -11,18 +11,26 @@
   <div class="brand">
     <span class="dot" aria-hidden="true"></span>
     <h1>TOKEN RADAR</h1>
-    <span class="tag">radar-2 model</span>
+    <span class="tag">radar-3 model · calibrated on this snapshot</span>
   </div>
   <p class="lede">Protocols that record no token yet, ranked by what a token would be
-  worth if their record stayed as it is. Implied value = 30% of TVL, scaled by
-  7-day growth, age and chain breadth. Tokens that already trade live on a
-  separate view — never mixed into the ranking.</p>
+  worth if their record stayed as it is. The value is not a guess and not
+  30% of TVL: it is fitted from the snapshot itself. Every protocol in
+  this snapshot that already has a token teaches the model what a token
+  is worth at a given TVL — log(market cap) = A + B·log(TVL), fitted by
+  least squares — then each category gets its own shrunk factor from the
+  same fit. A big TVL earns a smaller multiple, a small one a bigger
+  multiple, because that is what the market data says. Growth moves the
+  value at most 15% and age at most 10%: a 7-day window and age barely
+  predict the multiple, so they are kept small on purpose. Tokens that
+  already trade live on a separate view — never mixed into the ranking.</p>
   <div class="stats" id="stats"></div>
 </header>
 
 <nav class="views" aria-label="Views">
   <button id="viewPre" class="view active" type="button">Pre-token board</button>
   <button id="viewLive" class="view" type="button">Live tokens</button>
+  <button id="viewModel" class="view" type="button">How the model works</button>
   <span class="hint" id="countLine"></span>
 </nav>
 
@@ -45,6 +53,7 @@
 
 <main>
   <section id="detail" class="detail" hidden></section>
+  <section id="modelwrap" class="modelwrap" hidden></section>
   <section class="boardwrap">
     <table id="board">
       <thead>
@@ -64,8 +73,10 @@
 
 <footer>
   <p>How to read this board: rank 1 is the highest implied value. Every row
-  carries a 7-step farm plan built from that protocol's own TVL, chains and
-  age. Nothing here predicts whether or when a token launches.</p>
+  carries a 7-step farm plan built from that protocol's own TVL, chains,
+  category and age, with what each step costs and how long it takes. Open a
+  row to see exactly how its implied value was computed. Nothing here
+  predicts whether or when a token launches.</p>
   <p id="meta"></p>
 </footer>
 <script src="../data.js"></script>

@@ -7,7 +7,7 @@
 
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { buildBoard, boardIssues, dataScript } from "./lib/model.ts";
+import { buildBoard, boardIssues, dataScript, fitModel } from "./lib/model.ts";
 import type { Snapshot } from "./lib/model.ts";
 import { buildDossier } from "./vendor/makefun-board.ts";
 
@@ -53,7 +53,10 @@ function main(): void {
     fail("snapshot is missing protocols or watchlist");
   }
 
-  const rows = buildBoard(snap!);
+  // The value model calibrates itself from the snapshot's own token
+  // protocols before it scores anything pre-token.
+  const meta = fitModel(snap!);
+  const rows = buildBoard(snap!, meta);
   // A watchlist slug the snapshot never names is a data problem, not a
   // board problem: fail loudly instead of silently covering 39 of 40.
   const known = new Set(snap!.protocols.map((p) => p.slug));
@@ -84,7 +87,7 @@ function main(): void {
   writeFileSync(join(outDir, "board.json"), `${JSON.stringify({ rows }, null, 2)}\n`, "utf8");
   const boardBytes = statSync(join(outDir, "board.json")).size;
   if (boardBytes > 8 * 1024 * 1024) fail(`board.json is ${boardBytes} bytes, over the 8 MiB cap`);
-  writeFileSync(join(outDir, "data.js"), dataScript(snap!, rows), "utf8");
+  writeFileSync(join(outDir, "data.js"), dataScript(snap!, rows, meta), "utf8");
   cpSync(dashSrc, join(outDir, "dashboard"), { recursive: true });
   cpSync(shotsSrc, join(outDir, "screenshots"), { recursive: true });
 
@@ -101,7 +104,9 @@ function main(): void {
 
   const watchRows = rows.filter((r) => snap!.watchlist.includes(r.slug)).length;
   console.log(
-    `token-radar: ${snap!.protocols.length} protocols, ${watchRows} watchlist rows, ${rows.length} rows scored, top implied $${rows[0]!.implied_value_usd.toLocaleString("en-US")}`,
+    `token-radar: ${snap!.protocols.length} protocols, ${watchRows} watchlist rows, ${rows.length} rows scored, ` +
+      `model radar-3 fit on ${meta.calibration_n} token protocols (A=${meta.intercept.toFixed(3)}, B=${meta.exponent.toFixed(3)}), ` +
+      `top implied $${rows[0]!.implied_value_usd.toLocaleString("en-US")}`,
   );
 }
 

@@ -94,6 +94,21 @@ td .sub { display: block; color: var(--faint); font-size: 12px; }
 .detail ol { margin: 8px 0 0; padding-left: 22px; }
 .detail li { margin: 6px 0; }
 .detail .back { color: var(--accent2); cursor: pointer; background: none; border: 0; padding: 0; font-size: 14px; }
+.detail h3 { margin: 16px 0 6px; font-size: 15px; color: var(--accent); }
+.detail .note { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
+table.breakdown { width: 100%; border-collapse: collapse; margin: 4px 0 8px; }
+table.breakdown td { padding: 6px 10px; border-bottom: 1px solid var(--line); }
+table.breakdown td.num { text-align: right; font-variant-numeric: tabular-nums; font-weight: 700; color: var(--accent); }
+table.breakdown tr.total td { border-top: 2px solid var(--accent); border-bottom: 0; font-weight: 700; }
+.modelwrap {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 20px 24px; margin-bottom: 16px;
+}
+.modelwrap h2 { margin: 0 0 8px; font-size: 22px; }
+.modelwrap h3 { margin: 18px 0 6px; font-size: 15px; color: var(--accent); }
+.modelwrap p { color: var(--muted); margin: 6px 0; max-width: 820px; }
+.modelwrap .note { color: var(--faint); font-size: 13px; }
+.modelwrap table.breakdown { max-width: 420px; }
 .empty { padding: 22px; color: var(--muted); text-align: center; }
 footer { max-width: 1080px; margin: 0 auto; padding: 8px 28px 28px; color: var(--faint); font-size: 13px; }
 @media (max-width: 720px) {
