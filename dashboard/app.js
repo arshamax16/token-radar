@@ -57,6 +57,7 @@ function filtered() {
     tvl: (a, b) => b.tvl_usd - a.tvl_usd,
     age: (a, b) => b.age_days - a.age_days,
     growth: (a, b) => (b.change_7d ?? -1e9) - (a.change_7d ?? -1e9),
+    peer: (a, b) => b.peer_token_rate - a.peer_token_rate,
     name: (a, b) => a.name.localeCompare(b.name),
   }[state.sort];
   return list.sort(by);
@@ -73,6 +74,7 @@ function renderBoard() {
       <td class="num ${r.change_7d === null ? "" : r.change_7d >= 0 ? "pos" : "neg"}">${pct(r.change_7d)}</td>
       <td>${esc(chainsShort(r.chains))}</td>
       <td>${verdictBadge(r.verdict)}</td>
+      <td class="num">${Math.round(r.peer_token_rate * 100)}%</td>
       <td class="num implied">${money(r.implied_value_usd)}</td>
     </tr>`).join("");
   $("empty").hidden = list.length > 0;
@@ -138,9 +140,14 @@ function renderDetail(scrollIntoView) {
 function renderModel() {
   const box = $("modelwrap");
   const bt = R.model.backtest;
+  const peerByCat = {};
+  for (const r of R.rows) {
+    const key = r.category ?? "(null)";
+    if (!(key in peerByCat)) peerByCat[key] = r.peer_token_rate;
+  }
   const factors = Object.entries(R.model.category_factors)
     .sort((a, b) => b[1] - a[1])
-    .map(([k, v]) => `<tr><td>${esc(k)}</td><td class="num">${mult(v)}</td></tr>`).join("");
+    .map(([k, v]) => `<tr><td>${esc(k)}</td><td class="num">${mult(v)}</td><td class="num">${Math.round((peerByCat[k] ?? 0) * 100)}% of peers have a token</td></tr>`).join("");
   box.innerHTML = `
     <h2>How the model works — radar-4</h2>
     <p>${esc(R.model.method)}</p>
@@ -154,8 +161,9 @@ function renderModel() {
     <h3>2. Category factors — same TVL, different worth</h3>
     <p>Each category's factor is the shrunk mean of its residuals from the power law, pulled toward 1.0
     with weight n/(n+6) so a thin category cannot swing the value. Categories with no token protocol
-    in the snapshot take 1.0.</p>
-    <table class="breakdown"><tbody>${factors}</tbody></table>
+    in the snapshot take 1.0. The peer token rate beside each factor is the share of that category's
+    protocols that already record a token — shown for context, it never enters the factor or the value.</p>
+    <table class="breakdown"><thead><tr><th>Category</th><th>Factor</th><th>Peer token rate</th></tr></thead><tbody>${factors}</tbody></table>
     <h3>3. Growth and maturity — kept small on purpose</h3>
     <p>Growth moves the value at most 10% (7-day change clamped to ${R.model.growth_floor}%…${R.model.growth_cap}%)
     and age at most 5% (${R.model.maturity_floor.toFixed(2)}–${(R.model.maturity_floor + R.model.maturity_range).toFixed(2)} over ${R.model.maturity_days} days).
