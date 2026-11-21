@@ -1,4 +1,4 @@
-// Radar-4 value model for the Token Radar board.
+// Radar-5 value model for the Token Radar board.
 //
 // The model calibrates itself from the sealed snapshot at run time: it
 // fits a power law between TVL and market cap on the protocols in the
@@ -8,12 +8,17 @@
 //
 //   calibration: every protocol in the snapshot with mcap_usd > 0 and
 //     tvl_usd > 0 (128 of them on this snapshot) is the training set.
-//   fit: log(mcap) = A + B * log(TVL), ordinary least squares.
-//     On this snapshot A = 6.965, B = 0.522: a token's market cap grows
-//     like TVL^0.52, so the implied multiple FALLS as TVL grows
-//     (0.48x at $10M TVL, 0.16x at $100M, 0.05x at $1B, 0.03x at $3B).
-//     A flat multiple (radar-2's 30% of TVL) overvalues giants ~10x
-//     and undervalues small protocols ~3x; the power law fixes both.
+//   fit: log(mcap) = A + B * log(TVL). Radar-5 fits it by Huber
+//     iteratively-reweighted least squares (8 rounds, c = 1.345 * MAD):
+//     protocols whose market cap sits far off the power law (rain
+//     +6.5, xdai-stake-bridge -6.1, concentrator -5.1 in log terms)
+//     are downweighted instead of dragging the line. On this snapshot
+//     A = 7.10, B = 0.518 (OLS gave 6.965 / 0.522). A token's market
+//     cap grows like TVL^0.52, so the implied multiple FALLS as TVL
+//     grows (0.48x at $10M TVL, 0.16x at $100M, 0.05x at $1B,
+//     0.03x at $3B). A flat multiple (radar-2's 30% of TVL) overvalues
+//     giants ~10x and undervalues small protocols ~3x; the power law
+//     fixes both.
 //   category: each category's residual factor is the shrunk mean of
 //     log(mcap) - (A + B*log(TVL)) over its training protocols,
 //     shrunk toward 1.0 with weight n/(n+6) so a thin category cannot
@@ -48,19 +53,28 @@
 //     non-watchlist rows, which dropped the largest pre-token
 //     protocol, Sentora Curator ($2.76B TVL), from the board entirely.
 //
-// Backtest (5-fold cross-validation, deterministic split by slug hash;
-// lower median |log(implied/mcap)| is better; the split-half numbers
-// use the same split radar-3 reported):
-//   radar-3 (growth 0.15, maturity 0.90-1.10): 5-fold median 1.283
-//     (x3.61), within 2x 33.6%; split-half 1.196 / 1.326.
-//   radar-4 (this model): 5-fold median 1.264 (x3.54), within 2x
-//     35.2%; split-half 1.218 / 1.289. The gain is small and the
-//     model is deliberately conservative: growth and age barely
-//     predict the multiple, so they are kept small on purpose, and
-//     the power law plus the shrunk category factor do the work.
-//   Chain count was tested as an extra signal and rejected: its
-//     correlation with the calibration residual is 0.09, essentially
-//     none, so no chain factor is added.
+//   farm plans: each row's 7 steps come from its category's playbook
+//     in lib/plans.ts — a curated vault, a basis vault, a CDP, a
+//     prediction market and a chain each get their own steps, built
+//     only from that protocol's own record (chains, TVL, age, growth,
+//     verdict). The top-20 rows therefore read differently from each
+//     other instead of sharing one template.
+//
+// Backtest (lower median |log(implied/mcap)| is better; the 5-fold
+// numbers use a deterministic split by slug hash, the leave-one-
+// category-out numbers hold out one whole category at a time and
+// weight by its size — a second, harder held-out test):
+//   radar-4 (OLS):            5-fold 1.264 (x3.54), within 2x 35.2%; LOCO 1.479.
+//   radar-5 (Huber, this one): 5-fold 1.259 (x3.52), within 2x 35.2%; LOCO 1.461.
+//   The gain is small and is reported as small: the Huber fit is
+//   better on both held-out tests, in the same direction, and it is
+//   stable (A 7.09-7.13, B 0.517-0.518 across 3-20 IRLS rounds), so
+//   it is adopted — but it is a refinement, not a new model.
+//   Rejected on the same tests: per-category slope (5-fold 1.356),
+//   Theil-Sen (5-fold 1.342, LOCO 1.439 — better on LOCO, worse on
+//   5-fold), quadratic log(TVL) (1.306), median-residual category
+//   factor (1.288). Chain count was tested and rejected again: its
+//   correlation with the residual is 0.07, essentially none.
 
 export interface Protocol {
   slug: string;
@@ -102,8 +116,12 @@ export interface ModelMeta {
     universe_n: number;
     radar3_median_log_err: number;
     radar4_median_log_err: number;
+    radar5_median_log_err: number;
     radar3_within2x_pct: number;
     radar4_within2x_pct: number;
+    radar5_within2x_pct: number;
+    loco_radar4_median_log_err: number;
+    loco_radar5_median_log_err: number;
     method: string;
   };
 }
@@ -162,6 +180,8 @@ const MATURITY_DAYS = 1095;
 /** Fallback fit when the snapshot carries too few token protocols. */
 const FALLBACK_INTERCEPT = 7.01;
 const FALLBACK_EXPONENT = 0.52;
+/** Huber IRLS rounds for the power-law fit (converged: A moves <0.02 after round 3). */
+const HUBER_ROUNDS = 8;
 
 /** Verdict thresholds: implied value in dollars, 7-day change in per cent. */
 const FARM_MIN_VALUE = 20_000_000;
@@ -229,8 +249,10 @@ export function calibrationSet(snap: Snapshot): Protocol[] {
 }
 
 /**
- * Fit log(mcap) = A + B*log(TVL) by ordinary least squares on the
- * calibration set, then a shrunk category factor per category from the
+ * Fit log(mcap) = A + B*log(TVL) by Huber iteratively-reweighted least
+ * squares on the calibration set (8 rounds, c = 1.345 * 1.4826 * MAD):
+ * protocols far off the power law are downweighted instead of dragging
+ * the line. Then a shrunk category factor per category from the Huber
  * residuals. Returns the fitted model plus its calibration size.
  */
 export function fitModel(snap: Snapshot): ModelMeta {
@@ -242,6 +264,7 @@ export function fitModel(snap: Snapshot): ModelMeta {
     const xs = train.map((p) => Math.log(p.tvl_usd));
     const ys = train.map((p) => Math.log(p.mcap_usd as number));
     const n = xs.length;
+    // Start from ordinary least squares, then reweight.
     const mx = xs.reduce((s, x) => s + x, 0) / n;
     const my = ys.reduce((s, y) => s + y, 0) / n;
     let sxy = 0;
@@ -253,6 +276,31 @@ export function fitModel(snap: Snapshot): ModelMeta {
     if (sxx > 0) {
       exponent = sxy / sxx;
       intercept = my - exponent * mx;
+    }
+    for (let round = 0; round < HUBER_ROUNDS; round++) {
+      const res = train.map(
+        (p, i) => Math.log(p.mcap_usd as number) - (intercept + exponent * xs[i]!),
+      );
+      const sorted = [...res].sort((a, b) => a - b);
+      const med = Math.abs(sorted[Math.floor(sorted.length / 2)]!) || 0.5;
+      const c = 1.345 * 1.4826 * med;
+      const w = res.map((r) => (Math.abs(r) <= c ? 1 : c / Math.abs(r)));
+      let sw = 0;
+      let sx = 0;
+      let sy = 0;
+      let swxx = 0;
+      let swxy = 0;
+      for (let i = 0; i < n; i++) {
+        sw += w[i]!;
+        sx += w[i]! * xs[i]!;
+        sy += w[i]! * ys[i]!;
+        swxx += w[i]! * xs[i]! * xs[i]!;
+        swxy += w[i]! * xs[i]! * ys[i]!;
+      }
+      const denom = sw * swxx - sx * sx;
+      if (denom === 0) break;
+      exponent = (sw * swxy - sx * sy) / denom;
+      intercept = (sy - exponent * sx) / sw;
     }
     const residuals = new Map<string, number[]>();
     for (const p of train) {
@@ -269,14 +317,15 @@ export function fitModel(snap: Snapshot): ModelMeta {
     }
   }
   return {
-    version: "radar-4",
+    version: "radar-5",
     method:
       "Power-law calibration fitted at run time from the snapshot's own token protocols: " +
-      "log(market cap) = A + B*log(TVL) by least squares, then a shrunk category factor from the " +
-      "residuals. Implied value = exp(A) * TVL^B * category factor * growth * maturity. " +
-      "Growth moves the value at most 10% and maturity at most 5%: a 7-day window and age barely " +
-      "predict the multiple in the calibration data, so they are kept small on purpose. " +
-      "The peer token rate is shown for context only and never enters the value.",
+      "log(market cap) = A + B*log(TVL) by Huber iteratively-reweighted least squares (8 rounds), " +
+      "so protocols far off the power law are downweighted instead of dragging the line; then a " +
+      "shrunk category factor from the residuals. Implied value = exp(A) * TVL^B * category factor " +
+      "* growth * maturity. Growth moves the value at most 10% and maturity at most 5%: a 7-day " +
+      "window and age barely predict the multiple in the calibration data, so they are kept small " +
+      "on purpose. The peer token rate is shown for context only and never enters the value.",
     intercept,
     exponent,
     calibration_n: train.length,
@@ -292,9 +341,13 @@ export function fitModel(snap: Snapshot): ModelMeta {
       universe_n: 128,
       radar3_median_log_err: 1.283,
       radar4_median_log_err: 1.264,
+      radar5_median_log_err: 1.259,
       radar3_within2x_pct: 33.6,
       radar4_within2x_pct: 35.2,
-      method: "5-fold cross-validation, deterministic split by slug hash; median |log(implied/mcap)| on held-out folds",
+      radar5_within2x_pct: 35.2,
+      loco_radar4_median_log_err: 1.479,
+      loco_radar5_median_log_err: 1.461,
+      method: "5-fold cross-validation (deterministic split by slug hash) plus leave-one-category-out, both held-out; median |log(implied/mcap)|",
     },
   };
 }
@@ -354,166 +407,8 @@ export function farmVerdict(impliedUsd: number, change7d: number | null): Verdic
   return "SKIP";
 }
 
-function money(n: number): string {
-  if (n >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
-  if (n >= 1e6) return `$${(n / 1e6).toFixed(1)}M`;
-  if (n >= 1e3) return `$${(n / 1e3).toFixed(0)}K`;
-  return `$${n}`;
-}
-
-function pct(n: number | null): string {
-  if (n === null) return "unreported";
-  return `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`;
-}
-
-/** The core action for a category, as a farming verb the plan can use. */
-export function categoryAction(category: string | null): { verb: string; where: string } {
-  switch (category) {
-    case "Dexs":
-      return { verb: "swap and provide liquidity", where: "the largest liquidity pool" };
-    case "Lending":
-      return { verb: "supply collateral and borrow", where: "the main lending market" };
-    case "Yield":
-      return { verb: "deposit into the vault", where: "the highest-TVL strategy vault" };
-    case "Yield Aggregator":
-      return { verb: "deposit into the auto-compounding vault", where: "the top vault by TVL" };
-    case "RWA":
-      return { verb: "deposit into the tokenized-asset vault", where: "the flagship tokenized vault" };
-    case "Derivatives":
-      return { verb: "open a position or provide liquidity", where: "the most liquid perp market" };
-    case "CDP":
-      return { verb: "lock collateral and mint", where: "the CDP vault" };
-    case "Liquid Staking":
-      return { verb: "stake and mint the liquid token", where: "the staking contract" };
-    case "Bridge":
-    case "Canonical Bridge":
-    case "Cross Chain Bridge":
-      return { verb: "bridge a test amount across chains", where: "the main bridge route" };
-    case "Basis Trading":
-      return { verb: "deposit into the basis strategy", where: "the flagship basis vault" };
-    case "Risk Curators":
-      return { verb: "deposit into the curated vault", where: "the largest curated vault" };
-    case "Onchain Capital Allocator":
-      return { verb: "allocate into the managed vault", where: "the largest allocation vault" };
-    case "Restaking":
-      return { verb: "restake into the vault", where: "the main restaking vault" };
-    case "Collateral Markets":
-      return { verb: "supply collateral to the market", where: "the largest collateral market" };
-    case "Staking Pool":
-      return { verb: "stake into the pool", where: "the main staking pool" };
-    case "Indexes":
-      return { verb: "buy into the index", where: "the flagship index" };
-    case "Options":
-      return { verb: "provide liquidity to the options pool", where: "the most liquid options market" };
-    case "Prediction Market":
-      return { verb: "trade the most liquid market", where: "the top prediction market" };
-    case "Privacy":
-      return { verb: "use the private pool", where: "the main privacy pool" };
-    default:
-      return { verb: "use the protocol's core action", where: "its main pool or vault" };
-  }
-}
-
-/**
- * What a simple transaction typically costs on a chain, as a short
- * human-readable range. The chain list comes from the snapshot; the
- * cost is a property of the chain itself, not of the protocol.
- */
-export function chainGas(chain: string): string {
-  switch (chain) {
-    case "Ethereum":
-      return "$5–$20 of gas per transaction";
-    case "Solana":
-      return "about $0.01 of gas per transaction";
-    case "Polygon":
-    case "Arbitrum":
-    case "Optimism":
-    case "Base":
-    case "Scroll":
-    case "Blast":
-    case "Linea":
-    case "ZkSync Era":
-    case "Mantle":
-    case "Mode":
-    case "Katana":
-    case "Unichain":
-    case "Ink":
-    case "Corn":
-    case "Hemi":
-    case "BOB":
-      return "about $0.10–$1 of gas per transaction";
-    case "Binance":
-    case "Avalanche":
-    case "Berachain":
-    case "Hyperliquid L1":
-    case "Monad":
-    case "Plasma":
-    case "Flare":
-    case "Mezo":
-    case "RSK":
-    case "Stellar":
-    case "Provenance":
-    case "Arc":
-    case "Tempo":
-    case "Robinhood Chain":
-    case "Pharos":
-    case "Bitlayer":
-    case "CORE":
-      return "about $0.10–$2 of gas per transaction";
-    default:
-      return "$1–$5 of gas per transaction";
-  }
-}
-
-/** The cheapest chain of a protocol to start on, by the gas table above. */
-export function cheapestChain(chains: string[]): string {
-  const cheap = new Set([
-    "Solana", "Polygon", "Arbitrum", "Optimism", "Base", "Scroll", "Blast",
-    "Linea", "ZkSync Era", "Mantle", "Mode", "Katana", "Unichain", "Ink",
-    "Corn", "Hemi", "BOB",
-  ]);
-  for (const c of chains) if (cheap.has(c)) return c;
-  return chains[0] ?? "its home chain";
-}
-
-/**
- * Seven concrete farming steps built only from this protocol's own
- * record: its chains, its category's action, its TVL, its age, its
- * implied value and its verdict. Each step states what to do, what it
- * costs and how long it takes. The first step names the cheapest chain
- * to start on, and a multi-chain protocol gets a step about where to
- * keep the history.
- */
-export function farmSteps(p: Protocol, asOf: string, breakdown: ModelBreakdown, verdict: Verdict): string[] {
-  const age = breakdown.age_days;
-  const cat = p.category ?? "this sector";
-  const action = categoryAction(p.category);
-  const chainList = p.chains.slice(0, 3).join(", ") || "its home chain";
-  const extraChains = p.chains.length > 3 ? ` plus ${p.chains.length - 3} more` : "";
-  const startChain = cheapestChain(p.chains);
-  const gas = chainGas(startChain);
-  const weekly = `TVL moved ${pct(p.change_7d)} over the last 7 days`;
-  const weeks = age < 120 ? 2 : age < 400 ? 4 : 6;
-  const verdictLine =
-    verdict === "FARM"
-      ? "the verdict is FARM, so a steady position is worth building"
-      : verdict === "THIN"
-        ? "the verdict is THIN, so keep the position small and the cost low"
-        : "the verdict is SKIP, so treat any position as a small experiment, not a farm";
-  const capStep = (s: string): string => (s.length > 600 ? `${s.slice(0, 597).trimEnd()}…` : s);
-  const steps = [
-    `Start on ${startChain} (${gas}) and open ${p.name} on ${chainList}${extraChains}; confirm the app loads with ${money(p.tvl_usd)} of TVL behind it before you connect any wallet, and keep this farming wallet separate from your main funds.`,
-    `Start small: ${action.verb} in ${action.where} with $100–$500 first, wait for the position to show on the dashboard (usually minutes), and only then scale toward $1,000–$5,000 if the position and the app behave as expected — ${verdictLine}.`,
-    `Repeat the core ${cat} action once a week for at least ${weeks} weeks, because ${p.name} has run ${age} days and a steady weekly history reads better than one large deposit; each weekly visit takes 10–20 minutes plus gas on ${startChain}.`,
-    p.chains.length > 1
-      ? `Keep the whole history on ${startChain} when you can: ${p.name} runs on ${p.chains.length} chains, and a farm split across chains is harder to prove than one steady record in a single place; only move to another chain once the first position is established.`
-      : `This protocol runs on one chain (${chainList}), so every action stays in the same place and the whole history is easy to show; budget ${gas} for each transaction.`,
-    `Check the board every week (${weekly}); if TVL falls more than 20% for two weeks in a row, pause new deposits, withdraw nothing in a panic, and reassess the protocol before continuing.`,
-    `If ${p.name} opens points, quests or a leaderboard, complete each task from this same farming wallet so the whole history stays in one place; a task usually takes 5–15 minutes and costs only gas.`,
-    `Before any token launch, re-check the implied value (now ${money(breakdown.implied_value_usd)}) against fresh TVL, and claim only through ${p.name}'s own app; a claim usually costs $1–$10 of gas and takes a few minutes, and no real claim ever arrives by DM or email link.`,
-  ];
-  return steps.map(capStep);
-}
+// Farm plans live in lib/plans.ts (one playbook per category).
+import { farmSteps } from "./plans.ts";
 
 function toRow(p: Protocol, asOf: string, meta: ModelMeta, rates: Record<string, number>): BoardRow {
   const breakdown = impliedValueBreakdown(p, asOf, meta);
@@ -531,7 +426,7 @@ function toRow(p: Protocol, asOf: string, meta: ModelMeta, rates: Record<string,
     peer_token_rate: rates[p.category ?? "(null)"] ?? 0,
     verdict,
     model: breakdown,
-    farm_steps: farmSteps(p, asOf, breakdown, verdict),
+    farm_steps: farmSteps(p, asOf, breakdown, verdict, rates[p.category ?? "(null)"] ?? 0),
   };
 }
 

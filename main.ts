@@ -1,7 +1,8 @@
 // Token Radar entrypoint (Node 22, standard library only).
 //
 // Reads the sealed snapshot, scores every pre-token protocol with the
-// radar-4 model in lib/model.ts, and writes the ranked board, the
+// radar-5 model in lib/model.ts (Huber power-law fit + per-category
+// farm playbooks in lib/plans.ts), and writes the ranked board, the
 // dashboard data, the dashboard files, the screenshots and dossier.json
 // into the output directory. Run twice, it must write identical bytes.
 
@@ -105,7 +106,7 @@ function main(): void {
   const watchRows = rows.filter((r) => snap!.watchlist.includes(r.slug)).length;
   console.log(
     `token-radar: ${snap!.protocols.length} protocols, ${watchRows} watchlist rows, ${rows.length} rows scored, ` +
-      `model radar-4 fit on ${meta.calibration_n} token protocols (A=${meta.intercept.toFixed(3)}, B=${meta.exponent.toFixed(3)}), ` +
+      `model radar-5 fit on ${meta.calibration_n} token protocols (A=${meta.intercept.toFixed(3)}, B=${meta.exponent.toFixed(3)}), ` +
       `top implied $${rows[0]!.implied_value_usd.toLocaleString("en-US")}`,
   );
 }

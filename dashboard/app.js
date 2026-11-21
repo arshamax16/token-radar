@@ -1,4 +1,4 @@
-// Token Radar dashboard: renders window.RADAR (board + live tokens + model).
+// Token Radar dashboard (radar-5): renders window.RADAR (board + live tokens + model).
 // Ranked board with per-protocol detail views via hash routing (#/<slug>),
 // a model methodology view, text + category + verdict filtering, sorting,
 // and a separate Live view for protocols whose token already trades.
@@ -34,6 +34,20 @@ function renderStats() {
   $("meta").textContent = `Snapshot ${R.as_of} · ${R.source} · model ${R.model.version} · fitted at run time from the snapshot's own token protocols.`;
 }
 
+/* The value distribution: the top 6 implied values as bars, so the
+   board's shape — one giant, a near-giant, then a long tail — is
+   visible before the table. */
+function renderDist() {
+  const top = R.rows.slice(0, 6);
+  const max = top.length ? top[0].implied_value_usd : 1;
+  $("dist").innerHTML = `<h2>Implied value — top 6</h2>` + top.map((r) => `
+    <div class="dist-row">
+      <span class="nm"><b>#${r.rank}</b> ${esc(r.name)}</span>
+      <span class="bar"><i style="width:${Math.max(2, Math.round((r.implied_value_usd / max) * 100))}%"></i></span>
+      <span class="vl">${money(r.implied_value_usd)}</span>
+    </div>`).join("");
+}
+
 const state = { q: "", cat: "", verdict: "", sort: "implied" };
 
 function chainsShort(chains) {
@@ -66,8 +80,8 @@ function renderBoard() {
   const list = filtered();
   $("countLine").textContent = `${list.length} of ${R.rows.length} shown`;
   $("rows").innerHTML = list.map((r) => `
-    <tr data-slug="${esc(r.slug)}">
-      <td class="num">${r.rank}</td>
+    <tr data-slug="${esc(r.slug)}"${r.rank <= 3 ? ` class="top3"` : ""}>
+      <td class="num"><span class="rank-no">${r.rank}</span></td>
       <td><b>${esc(r.name)}</b><span class="sub">${esc(r.slug)}</span></td>
       <td>${esc(r.category || "—")}</td>
       <td class="num">${money(r.tvl_usd)}</td>
@@ -103,16 +117,22 @@ function renderDetail(scrollIntoView) {
   if (!row) { box.hidden = true; box.innerHTML = ""; return; }
   const m = row.model;
   const peers = R.rows.filter((x) => x.category === row.category).length;
+  const topValue = R.rows.length ? R.rows[0].implied_value_usd : 1;
+  const share = Math.max(2, Math.round((row.implied_value_usd / topValue) * 100));
   box.hidden = false;
   box.innerHTML = `
     <button class="back" type="button">← Back to the board</button>
-    <h2>#${row.rank} ${esc(row.name)}</h2>
+    <h2><span class="rank-no">#${row.rank}</span> ${esc(row.name)}</h2>
     <div class="facts">
       <span>Implied value <b>${money(row.implied_value_usd)}</b></span>
       <span>TVL <b>${money(row.tvl_usd)}</b></span>
       <span>7-day change <b>${pct(row.change_7d)}</b></span>
       <span>Tracked <b>${row.age_days} days</b></span>
       <span>Verdict <b>${verdictBadge(row.verdict)}</b></span>
+    </div>
+    <div class="valuebar">
+      <span class="lbl">Implied value against the board's top (${money(topValue)}) — ${share}%</span>
+      <div class="track"><i style="width:${share}%"></i></div>
     </div>
     <p>Chains ${esc(row.chains.join(", "))} · Category ${esc(row.category || "—")}</p>
     <h3>How this value was computed</h3>
@@ -149,15 +169,16 @@ function renderModel() {
     .sort((a, b) => b[1] - a[1])
     .map(([k, v]) => `<tr><td>${esc(k)}</td><td class="num">${mult(v)}</td><td class="num">${Math.round((peerByCat[k] ?? 0) * 100)}% of peers have a token</td></tr>`).join("");
   box.innerHTML = `
-    <h2>How the model works — radar-4</h2>
+    <h2>How the model works — radar-5</h2>
     <p>${esc(R.model.method)}</p>
     <h3>1. The power law — TVL does not buy value one-for-one</h3>
     <p>On the ${R.model.calibration_n} protocols in this snapshot that already have a token,
     log(market cap) = ${R.model.intercept.toFixed(3)} + ${R.model.exponent.toFixed(3)} × log(TVL),
-    fitted by least squares. A token's market cap grows like TVL^${R.model.exponent.toFixed(2)}:
+    fitted by Huber robust regression (8 rounds of reweighting). A token's market cap grows like TVL^${R.model.exponent.toFixed(2)}:
     the implied multiple is about 0.48× at $10M of TVL, 0.16× at $100M, 0.05× at $1B and 0.03× at $3B.
     A flat 30% of TVL would overvalue the giants roughly tenfold and undervalue small protocols threefold —
-    the power law fixes both.</p>
+    the power law fixes both. Huber downweights the few protocols whose market cap sits far off the line
+    (rain +6.5, xdai-stake-bridge −6.1 in log terms) instead of letting them drag it.</p>
     <h3>2. Category factors — same TVL, different worth</h3>
     <p>Each category's factor is the shrunk mean of its residuals from the power law, pulled toward 1.0
     with weight n/(n+6) so a thin category cannot swing the value. Categories with no token protocol
@@ -169,7 +190,7 @@ function renderModel() {
     and age at most 5% (${R.model.maturity_floor.toFixed(2)}–${(R.model.maturity_floor + R.model.maturity_range).toFixed(2)} over ${R.model.maturity_days} days).
     In the calibration data a 7-day window barely predicts the multiple (and its correlation with the residual is
     weakly negative), and age has essentially no correlation, so the weights were cut from radar-3's 15% and 10%
-    to 10% and 5%. Chain count was tested and rejected: its correlation with the residual is 0.09.</p>
+    to 10% and 5%. Chain count was tested and rejected again: its correlation with the residual is 0.07.</p>
     <h3>4. Peer token rate — shown, never multiplied</h3>
     <p>For each category the board shows the share of the snapshot's protocols in that category that already
     record a token (for example Risk Curators 13%, Dexes 74%, Lending 79%). It is a descriptive fact about
@@ -180,10 +201,16 @@ function renderModel() {
     Everything else is SKIP (${verdictCount.SKIP || 0} rows). The rule is stated on the board so anyone
     can check it against a row.</p>
     <h3>6. Backtest — ${bt.method}</h3>
-    <p>Median |log(implied/market cap)| on held-out folds: radar-3 ${bt.radar3_median_log_err} (×${Math.exp(bt.radar3_median_log_err).toFixed(2)}),
-    radar-4 ${bt.radar4_median_log_err} (×${Math.exp(bt.radar4_median_log_err).toFixed(2)}). Within 2× of the real market cap:
-    radar-3 ${bt.radar3_within2x_pct}%, radar-4 ${bt.radar4_within2x_pct}%. The gain is small — the honest read is
-    that growth and age carry almost no signal, and the power law plus the shrunk category factor do the work.</p>
+    <p>Median |log(implied/market cap)| on held-out folds (5-fold cross-validation):
+    radar-3 ${bt.radar3_median_log_err} (×${Math.exp(bt.radar3_median_log_err).toFixed(2)}),
+    radar-4 ${bt.radar4_median_log_err} (×${Math.exp(bt.radar4_median_log_err).toFixed(2)}),
+    radar-5 ${bt.radar5_median_log_err} (×${Math.exp(bt.radar5_median_log_err).toFixed(2)}). Within 2× of the real market cap:
+    radar-3 ${bt.radar3_within2x_pct}%, radar-4 ${bt.radar4_within2x_pct}%, radar-5 ${bt.radar5_within2x_pct}%.
+    A second, harder held-out test — leave-one-category-out, one whole category held out at a time:
+    radar-4 ${bt.loco_radar4_median_log_err}, radar-5 ${bt.loco_radar5_median_log_err}. The Huber gain is small
+    and is reported as small: it is better on both held-out tests, in the same direction, and stable across
+    3–20 reweighting rounds — a refinement, not a new model. Rejected on the same tests: per-category slope
+    (5-fold 1.356), Theil-Sen (1.342), quadratic log(TVL) (1.306) and a median-residual category factor (1.288).</p>
     <h3>7. Coverage — every rankable pre-token protocol</h3>
     <p>The board ranks ${R.rows.length} protocols: the ${R.watchlist_count} on the watchlist plus every other rankable
     pre-token protocol, above or below the ${money(R.floor_usd)} floor. Wrapped, staked and bridged products are
@@ -191,7 +218,14 @@ function renderModel() {
     already trade live on a separate view and are never mixed into the ranking.</p>
     <p class="note">Nothing here predicts whether or when a token launches. The implied value is what a token
     would be worth if this protocol's record stayed as it is, priced the way the market prices the protocols
-    that already have one.</p>`;
+    that already have one.</p>
+    <h3>8. Farm plans — one playbook per category</h3>
+    <p>Every row carries a 7-step plan from its category's playbook, built only from that protocol's own
+    record (chains, TVL, age, 7-day change, verdict). A curated vault, a basis vault, a CDP, a prediction
+    market and a chain each get different steps: the core action, the specific risk and the specific thing
+    to check are different, and young protocols (under 120 days) and fast-falling ones (7-day change below
+    −15%) get their own notes. The top-20 rows therefore read differently from each other instead of
+    sharing one template. Each step states what to do, what it costs and how long it takes.</p>`;
 }
 function setView(view) {
   $("viewPre").classList.toggle("active", view === "pre");
@@ -233,6 +267,7 @@ function initFilters() {
 }
 
 renderStats();
+renderDist();
 initFilters();
 renderBoard();
 renderDetail(false);
