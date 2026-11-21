@@ -371,6 +371,116 @@ const DERIVATIVES: StepFn[] = [
   (c) => claimStep(c),
 ];
 
+/** Liquidity Manager: a vault that manages a concentrated-liquidity range for you. */
+const LIQUIDITY_MANAGER: StepFn[] = [
+  (c) => `Start on ${c.startChain} (${c.gas}) and open ${c.name} on ${c.chainList}${c.extraChains}; a liquidity manager rebalances your range, so check which pools it manages and confirm ${c.tvlStr} of TVL behind it before connecting any wallet.`,
+  (c) => `Deposit $100–$500 into the largest managed pool first, after confirming the range and the fee tier; wait for the position to show (usually minutes), and only then scale toward $1,000–$5,000 if it behaves — ${verdictClause(c.verdict)}.${youngNote(c)}`,
+  (c) => `Watch the range: if the price moves out of your range, the position stops earning fees. Check the range weekly and rebalance when the price drifts — rebalancing costs gas on ${c.startChain}, so do not churn it daily.`,
+  (c) => `Check the fees against impermanent loss: the manager earns fees, but a volatile pair can lose to just holding. Compare the fee earnings against the price move weekly — if the fees do not cover the drift, narrow the range or exit instead of adding more.`,
+  (c) => `Repeat the deposit once a week for at least ${c.weeks} weeks, because ${c.name} has run ${c.age} days and a steady weekly history reads better than one large deposit; each weekly visit takes 10–20 minutes plus gas on ${c.startChain}.`,
+  (c) => tvlCheck(c),
+  (c) => claimStep(c),
+];
+
+/** Staking Pool: stake into a pool that delegates to validators. */
+const STAKING_POOL: StepFn[] = [
+  (c) => `Start on ${c.startChain} (${c.gas}) and open ${c.name} on ${c.chainList}${c.extraChains}; a staking pool delegates your stake to validators, so check who the validators are and confirm ${c.tvlStr} of TVL behind it before connecting any wallet.`,
+  (c) => `Stake $100–$500 first, after confirming the reward rate and the unstaking terms; wait for the stake to show (usually minutes), and only then scale toward $1,000–$5,000 if it behaves — ${verdictClause(c.verdict)}.${youngNote(c)}`,
+  (c) => `Check the unstaking queue: some pools lock your stake for days or weeks. Know the unstaking time before you stake more — a pool you cannot exit is a trap, so test a small unstake early while the amount is small.`,
+  (c) => `Watch the validators weekly: if a validator's performance drops or it gets slashed, your rewards drop with it. Check the validator set and confirm the pool spreads stake across several validators, not one.`,
+  (c) => `Repeat the stake once a week for at least ${c.weeks} weeks, because ${c.name} has run ${c.age} days and a steady weekly history reads better than one large deposit; each weekly visit takes 10–20 minutes plus gas on ${c.startChain}.`,
+  (c) => tvlCheck(c),
+  (c) => claimStep(c),
+];
+
+/** Restaking: put already-staked assets to work securing another service. */
+const RESTAKING: StepFn[] = [
+  (c) => `Start on ${c.startChain} (${c.gas}) and open ${c.name} on ${c.chainList}${c.extraChains}; restaking puts already-staked assets to work again, so check the operators, the services they secure and ${c.tvlStr} of TVL behind it before connecting any wallet.`,
+  (c) => `Restake $100–$500 first, after confirming the operator and the slashing conditions; wait for the position to show (usually minutes), and only then scale toward $1,000–$5,000 if it behaves — ${verdictClause(c.verdict)}.${youngNote(c)}`,
+  (c) => `Understand the slashing: restaked assets can be slashed if an operator or a secured service misbehaves. Check the slashing conditions and who the operators are before depositing more — the extra yield is not worth collateral you can lose to someone else's fault.`,
+  (c) => `Watch the operator's health weekly: if the operator's stake drops or its secured services change, reassess before adding more. Your restaked assets' safety depends on them, so an operator in trouble is a reason to pause, not to average in.`,
+  (c) => `Repeat the restake once a week for at least ${c.weeks} weeks, because ${c.name} has run ${c.age} days and a steady weekly history reads better than one large deposit; each weekly visit takes 10–20 minutes plus gas on ${c.startChain}.`,
+  (c) => tvlCheck(c),
+  (c) => claimStep(c),
+];
+
+/** Stablecoin Wrapper: wrap a plain stablecoin into a yield-bearing one. */
+const STABLECOIN_WRAPPER: StepFn[] = [
+  (c) => `Start on ${c.startChain} (${c.gas}) and open ${c.name} on ${c.chainList}${c.extraChains}; a wrapper turns a plain stablecoin into a yield-bearing one, so check the underlying stablecoin, the yield source and ${c.tvlStr} of TVL behind it before connecting any wallet.`,
+  (c) => `Wrap $100–$500 first, after confirming the exchange rate and the unwrap terms; wait for the wrapped balance to show (usually minutes), and only then scale toward $1,000–$5,000 if it behaves — ${verdictClause(c.verdict)}.${youngNote(c)}`,
+  (c) => `Check the peg: the wrapped token should track the underlying stablecoin. If it slips below $0.99 for days, stop wrapping more and reassess — a depegging wrapper turns a stable position into a loss.`,
+  (c) => `Know the unwrap cost and time: some wrappers charge an exit fee or delay the unwrap. Test a small unwrap early, while the amount is small, so you know the real exit before you need it.`,
+  (c) => `Repeat the wrap once a week for at least ${c.weeks} weeks, because ${c.name} has run ${c.age} days and a steady weekly history reads better than one large deposit; each weekly visit takes 10–20 minutes plus gas on ${c.startChain}.`,
+  (c) => tvlCheck(c),
+  (c) => claimStep(c),
+];
+
+/** CeDeFi: centralized custody mixed with DeFi — the custodian is the risk. */
+const CEDEFI: StepFn[] = [
+  (c) => `Start on ${c.startChain} (${c.gas}) and open ${c.name} on ${c.chainList}${c.extraChains}; CeDeFi mixes centralized custody with DeFi, so check who holds the funds, the strategy and ${c.tvlStr} of TVL behind it before connecting any wallet.`,
+  (c) => `Deposit $100–$500 first, after confirming the strategy and the custody arrangement; wait for the position to show (usually minutes), and only then scale toward $1,000–$5,000 if it behaves — ${verdictClause(c.verdict)}.${youngNote(c)}`,
+  (c) => `Check proof of reserves and the custodian: a CeDeFi vault's safety depends on the centralized entity. Look for proof of reserves, the custodian's name and any audit before depositing more — an unaudited custodian is a red flag.`,
+  (c) => `Test the withdrawal early: withdraw a small amount while it is small, and confirm it arrives. A vault that is slow or reluctant to return funds is a reason to exit, not to add more.`,
+  (c) => `Repeat the deposit once a week for at least ${c.weeks} weeks, because ${c.name} has run ${c.age} days and a steady weekly history reads better than one large deposit; each weekly visit takes 10–20 minutes plus gas on ${c.startChain}.`,
+  (c) => tvlCheck(c),
+  (c) => claimStep(c),
+];
+
+/** Farm: stake LP or single assets and harvest the emissions. */
+const FARM: StepFn[] = [
+  (c) => `Start on ${c.startChain} (${c.gas}) and open ${c.name} on ${c.chainList}${c.extraChains}; a farm pays emissions for staking LP or single assets, so check which pool pays what and confirm ${c.tvlStr} of TVL behind it before connecting any wallet.`,
+  (c) => `Stake $100–$500 into the highest-TVL pool first, after confirming the reward rate and the harvest terms; wait for the position to show (usually minutes), and only then scale toward $1,000–$5,000 if it behaves — ${verdictClause(c.verdict)}.${youngNote(c)}`,
+  (c) => `Check where the rewards come from: emissions, fees or both. A farm paying everything from emissions will fade when emissions stop; a farm earning from fees is steadier. Prefer the fee-earning pool when the two pay the same.`,
+  (c) => `Harvest regularly: unclaimed rewards do not compound, and some farms cut the rate over time. Harvest weekly and re-stake the rewards if the farm lets you — each harvest costs gas on ${c.startChain}, so do not harvest dust.`,
+  (c) => `Repeat the stake once a week for at least ${c.weeks} weeks, because ${c.name} has run ${c.age} days and a steady weekly history reads better than one large deposit; each weekly visit takes 10–20 minutes plus gas on ${c.startChain}.`,
+  (c) => tvlCheck(c),
+  (c) => claimStep(c),
+];
+
+/** Anchor BTC: earn yield on BTC, held by a custodian or a bridge. */
+const ANCHOR_BTC: StepFn[] = [
+  (c) => `Start on ${c.startChain} (${c.gas}) and open ${c.name} on ${c.chainList}${c.extraChains}; an Anchor BTC vault earns yield on BTC, so check how the BTC is held, where the yield comes from and ${c.tvlStr} of TVL behind it before connecting any wallet.`,
+  (c) => `Deposit $100–$500 of BTC (or wrapped BTC) first, after confirming the yield source and the redemption terms; wait for the position to show (usually minutes), and only then scale toward $1,000–$5,000 if it behaves — ${verdictClause(c.verdict)}.${youngNote(c)}`,
+  (c) => `Check the BTC backing and custody: the vault's BTC should be backed 1:1. Look for proof of reserves and the custodian's name — a vault whose BTC is not verifiably backed is a red flag, not a yield opportunity.`,
+  (c) => `Know the redemption: how long it takes to get BTC back and whether there is a fee or a lockup. Test a small redemption early, while the amount is small, so you know the real exit before you need it.`,
+  (c) => `Repeat the deposit once a week for at least ${c.weeks} weeks, because ${c.name} has run ${c.age} days and a steady weekly history reads better than one large deposit; each weekly visit takes 10–20 minutes plus gas on ${c.startChain}.`,
+  (c) => tvlCheck(c),
+  (c) => claimStep(c),
+];
+
+/** Leveraged Farming: borrow to farm more — liquidation is the risk. */
+const LEVERAGED_FARMING: StepFn[] = [
+  (c) => `Start on ${c.startChain} (${c.gas}) and open ${c.name} on ${c.chainList}${c.extraChains}; leveraged farming borrows to farm more, so check the leverage ratio, the borrow rate and ${c.tvlStr} of TVL behind it before connecting any wallet.`,
+  (c) => `Open a small leveraged position ($100–$500 of collateral, low leverage) first, after confirming the borrow rate and the health factor; wait for the position to show (usually minutes), and only then scale toward $1,000–$5,000 if it behaves — ${verdictClause(c.verdict)}.${youngNote(c)}`,
+  (c) => `Keep the leverage low: borrow at most half of what the vault allows, so a price drop cannot liquidate you. Check the health factor weekly — liquidation is the real risk here, not the yield — and repay part of the borrow before the factor gets tight.`,
+  (c) => `Watch the borrow rate weekly: when utilization spikes, borrow rates spike and the leveraged farm's net yield can turn negative. Check the rate before adding more, and unwind if the borrow cost exceeds the farm yield.`,
+  (c) => `Repeat the core action once a week for at least ${c.weeks} weeks, because ${c.name} has run ${c.age} days and a steady weekly history reads better than one large deposit; each weekly visit takes 10–20 minutes plus gas on ${c.startChain}.`,
+  (c) => tvlCheck(c),
+  (c) => claimStep(c),
+];
+
+/** Decentralized BTC: BTC minted on-chain without a central custodian. */
+const DECENTRALIZED_BTC: StepFn[] = [
+  (c) => `Start on ${c.startChain} (${c.gas}) and open ${c.name} on ${c.chainList}${c.extraChains}; a decentralized BTC is minted on-chain without a central custodian, so check how the peg is kept and confirm ${c.tvlStr} of TVL behind it before connecting any wallet.`,
+  (c) => `Mint or bridge $100–$500 of decentralized BTC first, after confirming the mint ratio and the redemption terms; wait for the balance to show (usually minutes), and only then scale toward $1,000–$5,000 if it behaves — ${verdictClause(c.verdict)}.${youngNote(c)}`,
+  (c) => `Check the peg: the decentralized BTC should track BTC 1:1. If it slips below 0.99 BTC for days, stop minting more and reassess — a depegging BTC turns a stable position into a loss.`,
+  (c) => `Use it in DeFi cautiously: supply it to a lending market or a pool only after confirming the market accepts it and the rates. A decentralized BTC that no market accepts is hard to exit, so confirm an exit route before minting more.`,
+  (c) => `Repeat the core action once a week for at least ${c.weeks} weeks, because ${c.name} has run ${c.age} days and a steady weekly history reads better than one large deposit; each weekly visit takes 10–20 minutes plus gas on ${c.startChain}.`,
+  (c) => tvlCheck(c),
+  (c) => claimStep(c),
+];
+
+/** Dual-Token Stablecoin: two tokens split stability and volatility. */
+const DUAL_TOKEN_STABLECOIN: StepFn[] = [
+  (c) => `Start on ${c.startChain} (${c.gas}) and open ${c.name} on ${c.chainList}${c.extraChains}; a dual-token system splits stability and volatility across two tokens, so check how the two tokens interact and confirm ${c.tvlStr} of TVL behind it before connecting any wallet.`,
+  (c) => `Mint or buy $100–$500 of the stable token first, after confirming the peg mechanism and the second token's role; wait for the balance to show (usually minutes), and only then scale toward $1,000–$5,000 if it behaves — ${verdictClause(c.verdict)}.${youngNote(c)}`,
+  (c) => `Check the peg mechanism: how the system keeps the stable token at $1 and what the second token absorbs. If the second token's price collapses, the peg can break — watch both tokens, not just the stable one.`,
+  (c) => `Know the second token's risk: it absorbs volatility, so it can drop sharply when the system is stressed. Do not hold the second token as a stable asset — it is the shock absorber, and its price is the system's health gauge.`,
+  (c) => `Repeat the core action once a week for at least ${c.weeks} weeks, because ${c.name} has run ${c.age} days and a steady weekly history reads better than one large deposit; each weekly visit takes 10–20 minutes plus gas on ${c.startChain}.`,
+  (c) => tvlCheck(c),
+  (c) => claimStep(c),
+];
+
 /** Generic fallback: the radar-4 pattern, for categories with no dedicated playbook. */
 const GENERIC: StepFn[] = [
   (c) => `Start on ${c.startChain} (${c.gas}) and open ${c.name} on ${c.chainList}${c.extraChains}; confirm the app loads with ${c.tvlStr} of TVL behind it before you connect any wallet, and keep this farming wallet separate from your main funds.`,
@@ -397,6 +507,16 @@ const PLAYBOOKS: Record<string, StepFn[]> = {
   "Yield": YIELD,
   "Yield Aggregator": YIELD_AGGREGATOR,
   "Derivatives": DERIVATIVES,
+  "Liquidity Manager": LIQUIDITY_MANAGER,
+  "Staking Pool": STAKING_POOL,
+  "Restaking": RESTAKING,
+  "Stablecoin Wrapper": STABLECOIN_WRAPPER,
+  "CeDeFi": CEDEFI,
+  "Farm": FARM,
+  "Anchor BTC": ANCHOR_BTC,
+  "Leveraged Farming": LEVERAGED_FARMING,
+  "Decentralized BTC": DECENTRALIZED_BTC,
+  "Dual-Token Stablecoin": DUAL_TOKEN_STABLECOIN,
 };
 
 /**
