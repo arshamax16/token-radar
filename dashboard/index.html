@@ -11,19 +11,14 @@
   <div class="brand">
     <span class="dot" aria-hidden="true"></span>
     <h1>TOKEN RADAR</h1>
-    <span class="tag">radar-3 model · calibrated on this snapshot</span>
+    <span class="tag">radar-4 model · calibrated on this snapshot</span>
   </div>
   <p class="lede">Protocols that record no token yet, ranked by what a token would be
-  worth if their record stayed as it is. The value is not a guess and not
-  30% of TVL: it is fitted from the snapshot itself. Every protocol in
-  this snapshot that already has a token teaches the model what a token
-  is worth at a given TVL — log(market cap) = A + B·log(TVL), fitted by
-  least squares — then each category gets its own shrunk factor from the
-  same fit. A big TVL earns a smaller multiple, a small one a bigger
-  multiple, because that is what the market data says. Growth moves the
-  value at most 15% and age at most 10%: a 7-day window and age barely
-  predict the multiple, so they are kept small on purpose. Tokens that
-  already trade live on a separate view — never mixed into the ranking.</p>
+  worth if their record stayed as it is. The value is fitted from the
+  snapshot itself — log(market cap) = A + B·log(TVL) on the protocols
+  that already have a token — never a flat share of TVL and never a
+  hardcoded list of names. Every row carries a farm verdict (FARM, THIN
+  or SKIP) and a 7-step plan with what each step costs.</p>
   <div class="stats" id="stats"></div>
 </header>
 
@@ -38,6 +33,14 @@
   <label>Search <input id="q" type="search" placeholder="protocol name or slug" autocomplete="off"></label>
   <label>Category
     <select id="cat"><option value="">All categories</option></select>
+  </label>
+  <label>Verdict
+    <select id="verdict">
+      <option value="">All verdicts</option>
+      <option value="FARM">FARM</option>
+      <option value="THIN">THIN</option>
+      <option value="SKIP">SKIP</option>
+    </select>
   </label>
   <label>Sort by
     <select id="sort">
@@ -57,7 +60,7 @@
   <section class="boardwrap">
     <table id="board">
       <thead>
-        <tr><th>#</th><th>Protocol</th><th>Category</th><th>TVL</th><th>7d</th><th>Chains</th><th>Age</th><th>Implied value</th></tr>
+        <tr><th>#</th><th>Protocol</th><th>Category</th><th>TVL</th><th>7d</th><th>Chains</th><th>Verdict</th><th>Implied value</th></tr>
       </thead>
       <tbody id="rows"></tbody>
     </table>
@@ -72,11 +75,14 @@
 </main>
 
 <footer>
-  <p>How to read this board: rank 1 is the highest implied value. Every row
-  carries a 7-step farm plan built from that protocol's own TVL, chains,
-  category and age, with what each step costs and how long it takes. Open a
-  row to see exactly how its implied value was computed. Nothing here
-  predicts whether or when a token launches.</p>
+  <p>How to read this board: rank 1 is the highest implied value. The
+  verdict is a rule, not a feeling — FARM means implied value ≥ $20M and
+  7-day change ≥ −10%, THIN means implied value ≥ $5M and 7-day change ≥
+  −25%, anything else is SKIP. Every row carries a 7-step farm plan built
+  from that protocol's own TVL, chains, category and age, with what each
+  step costs and how long it takes. Open a row to see exactly how its
+  implied value was computed, including the peer token rate for its
+  category. Nothing here predicts whether or when a token launches.</p>
   <p id="meta"></p>
 </footer>
 <script src="../data.js"></script>
