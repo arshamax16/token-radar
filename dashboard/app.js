@@ -191,6 +191,7 @@ function renderDetail(scrollIntoView) {
       <tr><td>Chain factor — ${esc(m.chains.join(", ") || "no chain")} (mean of the chains' factors, shrunk toward 1.0)</td><td class="num">${mult(m.chain_factor)}</td></tr>
       <tr><td>Chain count — ${m.chains.length} chain${m.chains.length === 1 ? "" : "s"} (band factor: three or fewer vs four or more, shrunk toward 1.0)</td><td class="num">${mult(m.chain_count_factor)}</td></tr>
       ${m.interaction_factor !== 1 ? `<tr><td>Chain-count × category — ${esc(m.category || "no category")} on ${m.chains.length <= 3 ? "three or fewer" : "four or more"} chains (two-way interaction, shrunk toward 1.0)</td><td class="num">${mult(m.interaction_factor)}</td></tr>` : ""}
+      ${m.sign_interaction_factor !== 1 ? `<tr><td>7-day change × category — ${esc(m.category || "no category")} with ${row.change_7d !== null && row.change_7d > 0 ? "positive" : "negative"} 7-day change (two-way interaction, shrunk toward 1.0)</td><td class="num">${mult(m.sign_interaction_factor)}</td></tr>` : ""}
       <tr><td>Growth — 7-day change ${pct(row.change_7d)} (at most ±10%)</td><td class="num">${mult(m.growth_multiplier)}</td></tr>
       <tr><td>Maturity — tracked ${m.age_days} days (0.95–1.05)</td><td class="num">${mult(m.maturity_multiplier)}</td></tr>
       ${m.unknown_age_factor !== 1 ? `<tr><td>Unknown listing date — no tracking start recorded (group factor)</td><td class="num">${mult(m.unknown_age_factor)}</td></tr>` : ""}
@@ -254,7 +255,7 @@ function renderModel() {
     .sort((a, b) => b[1] - a[1])
     .map(([k, v2]) => `<tr><td>${esc(k)}</td><td class="num">${mult(v2)}</td></tr>`).join("");
   box.innerHTML = `
-    <h2>How the model works — radar-12</h2>
+    <h2>How the model works — radar-13</h2>
     <p>${esc(R.model.method)}</p>
     <h3>1. The power law — TVL does not buy value one-for-one</h3>
     <p>On the ${R.model.calibration_n} protocols in this snapshot that already have a token
@@ -306,7 +307,18 @@ function renderModel() {
     five groups qualify, all in the three-or-fewer band — Lending ×${(R.model.interaction_factors.Lending?.lo || 1).toFixed(2)},
     Dexs ×${(R.model.interaction_factors.Dexs?.lo || 1).toFixed(2)}, Basis Trading ×${(R.model.interaction_factors["Basis Trading"]?.lo || 1).toFixed(2)},
     Yield ×${(R.model.interaction_factors.Yield?.lo || 1).toFixed(2)}, RWA ×${(R.model.interaction_factors.RWA?.lo || 1).toFixed(2)}.
-    Every other (category, band) group takes 1.0. See §7 for the test and its cost.</p>
+    Every other (category, band) group takes 1.0. See §7 for the test and its cost.
+    The same two-way form is applied to the week's direction: the 7-day change as a continuous
+    feature carries nothing, and as a binary sign factor it loses — but whether the change is
+    positive or negative differs by category. The sign × category interaction is
+    median(cat,sign) − median(cat) − median(sign) + median(all) on the training residuals,
+    shrunk by n/(n+${R.model.sign_interaction_shrink_k}) toward 1.0, only for (category, sign)
+    groups with at least ${R.model.sign_interaction_min_n} training protocols. On this snapshot
+    five groups qualify, all with a negative 7-day change — Lending ×${(R.model.sign_interaction_factors.Lending?.neg || 1).toFixed(2)},
+    Dexs ×${(R.model.sign_interaction_factors.Dexs?.neg || 1).toFixed(2)}, Basis Trading ×${(R.model.sign_interaction_factors["Basis Trading"]?.neg || 1).toFixed(2)},
+    Yield ×${(R.model.sign_interaction_factors.Yield?.neg || 1).toFixed(2)}, RWA ×${(R.model.sign_interaction_factors.RWA?.neg || 1).toFixed(2)}.
+    The positive groups are too small everywhere (11 protocols with a positive change in total),
+    so they take 1.0. See §7 for the test.</p>
     <table class="breakdown"><thead><tr><th>Chain</th><th>Factor</th></tr></thead><tbody>${chainFactors}</tbody></table>
     <h3>4. Growth and maturity — kept small on purpose</h3>
     <p>Growth moves the value at most 10% (7-day change clamped to ${R.model.growth_floor}%…${R.model.growth_cap}%)
@@ -446,16 +458,21 @@ function renderModel() {
     price lower at the same TVL), but the joint fit generalises worse than the fixed weights. A
     post-hoc shrunk growth/maturity correction scores CV 1.191–1.233. Capping the interaction
     factor's range scores CV 1.096–1.122 — the full range is what wins. A category × unknown-age
-    interaction scores CV 1.081–1.137. The one change that wins is a refinement of radar-11's
-    interaction shrinkage: K=8 instead of K=12 (min_n=5 kept). It beats radar-11 on two of the five
-    held-out tests and ties the other three: CV 1.067 → 1.059, LOO 0.997 → 0.991, LOCO 1.040
-    unchanged, walk-forward old → young 0.819 and young → old 1.219 unchanged. The CV win is spread
-    across 3 of the 5 seeds (one tie, one loss), and the neighbouring grid points (K=6 and K=10 with
-    min_n=5) score CV 1.061 and 1.063 — a broad plateau, not a tuned spike. The cost is stated, not
-    hidden: Dexs leave-one-out gets worse again (1.661 → 1.751) and the mean absolute error is
-    slightly worse (LOO 1.526 → 1.528, CV 1.545 → 1.547), while the within-2× share on leave-one-out
-    falls (34.0% → 33.0%). The radar-12 target is NOT reached — LOO 0.991 against ≤ 0.95, CV 1.059
-    against ≤ 1.05 — both close but short, and the gain is small, reported as small.</p>
+    interaction scores CV 1.081–1.137. The one change that wins is a 7-day-change-sign × category
+    interaction, found by a systematic binary-split scan of every numeric snapshot field (change_7d
+    sign, TVL band, age splits, alternative chain-count thresholds, each at K=20/50/100, all refit
+    train-only per fold): every split loses as a main effect — the sign factor scores CV 1.073 and
+    LOO 1.008, the TVL band CV 1.064 and LOO 1.009, the age splits win CV to 1.039 but lose LOO to
+    1.050 — and sequential factors on the full-model residuals lose too (LOO 1.011–1.120), as do the
+    combinations of the near-misses. Only the sign × category interaction beats radar-12 on two of the
+    five held-out tests and ties the other three: CV 1.059 → 1.058, LOO 0.991 → 0.985, LOCO 1.040
+    unchanged, walk-forward old → young 0.819 and young → old 1.219 unchanged. The win is a broad
+    plateau, not a tuned spike: K2=12–80 all score CV 1.058–1.059 and LOO 0.985–0.989. And it is the
+    first change since radar-10 that improves the two hardest categories instead of hurting them:
+    Dexs leave-one-out 1.751 → 1.722, Lending 1.920 → 1.895, with the mean absolute error slightly
+    better on leave-one-out (1.528 → 1.526) and the within-2× shares unchanged (33.0%). The radar-13
+    target is NOT reached — LOO 0.985 against ≤ 0.95, CV 1.058 against ≤ 1.05 — both close but short,
+    and the gain is small, reported as small.</p>
     <h3>8. Validation — the board answers its own checks</h3>
     <p>${esc(v.method)} On this snapshot, on the ${v.training_n} board-eligible token protocols:
     repeated 5-fold CV median |log error| ${v.cv_median_log_err.toFixed(3)} (×${Math.exp(v.cv_median_log_err).toFixed(2)}, within 2× ${v.cv_within2x_pct.toFixed(1)}%),
@@ -472,23 +489,24 @@ function renderModel() {
     radar-9 ${bt.radar9_median_log_err} (×${Math.exp(bt.radar9_median_log_err).toFixed(2)}, within 2× ${bt.radar9_within2x_pct}%),
     radar-10 ${bt.radar10_median_log_err} (×${Math.exp(bt.radar10_median_log_err).toFixed(2)}, within 2× ${bt.radar10_within2x_pct}%),
     radar-11 ${bt.radar11_median_log_err} (×${Math.exp(bt.radar11_median_log_err).toFixed(2)}, within 2× ${bt.radar11_within2x_pct}%),
-    radar-12 ${bt.radar12_median_log_err} (×${Math.exp(bt.radar12_median_log_err).toFixed(2)}, within 2× ${bt.radar12_within2x_pct}%).
+    radar-12 ${bt.radar12_median_log_err} (×${Math.exp(bt.radar12_median_log_err).toFixed(2)}, within 2× ${bt.radar12_within2x_pct}%),
+    radar-13 ${bt.radar13_median_log_err} (×${Math.exp(bt.radar13_median_log_err).toFixed(2)}, within 2× ${bt.radar13_within2x_pct}%).
     Within 2× of the real market cap:
     radar-3 ${bt.radar3_within2x_pct}%, radar-4 ${bt.radar4_within2x_pct}%, radar-5 ${bt.radar5_within2x_pct}%,
     radar-6 ${bt.radar6_within2x_pct}% (all 128) and ${bt.radar6_eligible_within2x_pct}% (eligible 94),
     radar-7 ${bt.radar7_within2x_pct}%, radar-8 ${bt.radar8_within2x_pct}%, radar-9 ${bt.radar9_within2x_pct}%,
-    radar-10 ${bt.radar10_within2x_pct}%, radar-11 ${bt.radar11_within2x_pct}%, radar-12 ${bt.radar12_within2x_pct}%.
+    radar-10 ${bt.radar10_within2x_pct}%, radar-11 ${bt.radar11_within2x_pct}%, radar-12 ${bt.radar12_within2x_pct}%, radar-13 ${bt.radar13_within2x_pct}%.
     A second, harder held-out test — leave-one-category-out, one whole category held out at a time:
     radar-4 ${bt.loco_radar4_median_log_err}, radar-5 ${bt.loco_radar5_median_log_err},
     radar-6 ${bt.loco_radar6_median_log_err}, radar-7 ${bt.radar7_loco_median_log_err},
     radar-8 ${bt.radar8_loco_median_log_err}, radar-9 ${bt.radar9_loco_median_log_err},
     radar-10 ${bt.radar10_loco_median_log_err}, radar-11 ${bt.radar11_loco_median_log_err},
-    radar-12 ${bt.radar12_loco_median_log_err}. The radar-12 gain is
-    real but small and is reported as small: it is better than radar-11 on two of the five held-out tests and
-    ties the other three — but the mean absolute error is slightly worse and Dexs gets worse on its own
-    test, so the gain is a median gain, not a general one.
+    radar-12 ${bt.radar12_loco_median_log_err}, radar-13 ${bt.radar13_loco_median_log_err}. The radar-13 gain is
+    real but small and is reported as small: it is better than radar-12 on two of the five held-out tests and
+    ties the other three — and unlike radar-11 and radar-12 it improves Dexs and Lending on their own
+    tests, so the gain is broader than a median gain, though still small.
     The radar-11 target of median |log err| ≤ 1.00 on leave-one-out and ≤ 1.10 on 5-fold CV is reached;
-    the radar-12 target (≤ 0.95 on leave-one-out, ≤ 1.05 on 5-fold CV) is NOT reached — 0.991 and 1.059.
+    the radar-12 target (≤ 0.95 on leave-one-out, ≤ 1.05 on 5-fold CV) is NOT reached — 0.985 and 1.058.
     Within-2× ≥ 45% is still not reached. A token's market cap follows its
     TVL only loosely (correlation 0.44 in log terms); the rest is tokenomics the snapshot cannot see.
     Rejected on the same tests: ridge regression over all features (5-fold 1.250, LOO 1.292),

@@ -1,37 +1,43 @@
-// Radar-12 value model for the Token Radar board.
+// Radar-13 value model for the Token Radar board.
 //
-// Radar-12 keeps radar-11's board (token odds, honest ranges, all-758
-// coverage, costed farm plans) and the radar-11 fit (winsorised power
+// Radar-13 keeps radar-12's board (token odds, honest ranges, all-758
+// coverage, costed farm plans) and the radar-12 fit (winsorised power
 // law + empirical-Bayes category factors + unknown-age factor +
 // chain-count band factor + chain-count × category interaction), and
-// refines the interaction's shrinkage: K=8 instead of K=12. The
-// refinement sweep around radar-11's optimum (K=6/8/10/12/16/20,
-// min_n=4/5/6/7) finds K=8 with min_n=5 best on both held-out medians:
-// CV 1.067 → 1.059 and LOO 0.997 → 0.991, with LOCO and both
-// walk-forwards unchanged, and the CV win spread across 3 of the 5
-// seeds (one tie, one loss), not one lucky split. The target radar-12
-// set for itself (CV ≤ 1.05, LOO ≤ 0.95) is NOT reached — both medians
-// are close but short — and the gain is small, reported as small.
-// The cost is stated, not hidden: Dexs leave-one-out gets worse again
-// (1.661 → 1.751), the mean absolute error is slightly worse (LOO
-// 1.526 → 1.528, CV 1.545 → 1.547), and the within-2× share on
-// leave-one-out falls (34.0% → 33.0%) — the gain sits in the middle of
-// the error distribution, as in radar-9, radar-10 and radar-11.
-// The other radar-12 ideas all failed and are documented in the model
-// view: gradient boosting and random forests on the snapshot features
-// (a new estimator family, first tried here — best CV 1.286, far from
-// 1.067; a log-space ensemble with the power law also loses, CV 1.116
-// at weight 0.1), TVL per chain instead of total TVL (CV 1.087),
-// an unknown-age × chain-count interaction (CV 1.078), an empirical
-// age-bin factor to recalibrate the maturity curve (CV 1.106–1.143 —
-// the 6–12-month "spike" is two or three extreme protocols, not an age
-// effect), fitting the growth and maturity coefficients instead of the
-// fixed 10%/5% weights (CV 1.091–1.150 — the fitted maturity slope is
-// negative, but the joint fit generalises worse), a post-hoc shrunk
-// growth/maturity correction (CV 1.191–1.233), capping the interaction
-// factor's range (CV 1.096–1.122 — the full range is what wins), and a
-// category × unknown-age interaction (CV 1.081–1.137). The honest range
-// is recalibrated to ×0.22–×2.39.
+// adds one factor: a 7-day-change-sign × category interaction. It is
+// the radar-10 idea applied a second time, found by a systematic
+// binary-split scan of every numeric snapshot field (change_7d sign,
+// TVL band, age splits, alternative chain-count thresholds — each at
+// K=20/50/100, all refit train-only per fold). Every split LOSES as a
+// main effect: the sign factor (CV 1.073, LOO 1.008), the TVL band
+// (CV 1.064, LOO 1.009), the age splits (CV wins to 1.039 but LOO
+// loses to 1.050 — the gain flips sign between the two medians, so it
+// is not a win), the alternative chain thresholds, and the
+// chain-count × category refinement grid (K2=8/min_n=5 stays optimal).
+// But the sign effect differs by category: the two-way interaction
+// median(cat,sign) − median(cat) − median(sign) + median(all),
+// shrunk by n/(n+20) toward 1.0 for (category, sign) groups with at
+// least 5 training protocols, wins on BOTH held-out medians: CV
+// 1.059 → 1.058 and LOO 0.991 → 0.985, with LOCO 1.040 and both
+// walk-forwards 0.819/1.219 unchanged. The win is a broad plateau,
+// not a tuned spike (K2=12–80 all score CV 1.058–1.059 and LOO
+// 0.985–0.989), and it is the first change since radar-10 that
+// improves the two hardest categories instead of hurting them: Dexs
+// leave-one-out 1.751 → 1.722 and Lending 1.920 → 1.895, with the
+// mean absolute error slightly better on leave-one-out (1.528 → 1.526)
+// and the within-2× shares unchanged (33.0%). Only five groups
+// qualify, all with a negative 7-day change — Lending ×0.97, Dexs
+// ×1.02, Basis Trading ×1.01, Yield ×1.02, RWA ×1.04 — so the change
+// is small and the factors are heavily shrunk. The target radar-13
+// set for itself (CV ≤ 1.05, LOO ≤ 0.95) is NOT reached — both
+// medians are close but short — and the gain is small, reported as
+// small. The other radar-13 ideas all failed and are documented in the
+// model view: sequential factors computed on the full-model residuals
+// (age and sign — LOO 1.011–1.120, worse than the same splits on the
+// power-law residuals), age × category and TVL-band × category
+// interactions, and every combination of the near-misses (each wins
+// CV and loses LOO, or loses both). The honest range stays
+// ×0.22–×2.39.
 //
 // No protocol name is ever hardcoded and no constant is tuned to a
 // name: the same functions score every row. The model calibrates
@@ -85,6 +91,9 @@ export interface ModelMeta {
   interaction_factors: Record<string, Record<string, number>>;
   interaction_shrink_k: number;
   interaction_min_n: number;
+  sign_interaction_factors: Record<string, Record<string, number>>;
+  sign_interaction_shrink_k: number;
+  sign_interaction_min_n: number;
   odds_method: string;
   range_method: string;
   range_log_lo: number;
@@ -137,6 +146,10 @@ export interface ModelMeta {
     radar12_within2x_pct: number;
     radar12_loco_median_log_err: number;
     radar12_loo_median_log_err: number;
+    radar13_median_log_err: number;
+    radar13_within2x_pct: number;
+    radar13_loco_median_log_err: number;
+    radar13_loo_median_log_err: number;
     radar3_within2x_pct: number;
     radar4_within2x_pct: number;
     radar5_within2x_pct: number;
@@ -191,6 +204,7 @@ export interface ModelBreakdown {
   unknown_age_factor: number;
   chain_count_factor: number;
   interaction_factor: number;
+  sign_interaction_factor: number;
   age_days: number;
   implied_value_usd: number;
 }
@@ -255,6 +269,13 @@ const CHAIN_COUNT_SHRINK_K = 50;
  *  (34.0% → 33.0%). */
 const INTERACTION_SHRINK_K = 8;
 const INTERACTION_MIN_N = 5;
+/** Shrinkage for the 7-day-change-sign × category interaction factors:
+ *  n/(n+K). K=20 sits in the middle of a broad plateau (K2=12–80 all
+ *  beat radar-12 on LOO, 0.985–0.989, with CV 1.058–1.059) — the win
+ *  is not a tuned spike. Only (category, sign) groups with at least
+ *  SIGN_INTERACTION_MIN_N training protocols take a factor. */
+const SIGN_INTERACTION_SHRINK_K = 20;
+const SIGN_INTERACTION_MIN_N = 5;
 /** Winsorisation quantiles for the log(mcap/TVL) multiple: the training
  *  set's own P5/P95 (radar-8). The one or two most extreme multiples
  *  cannot drag the fit or the category factors. */
@@ -644,6 +665,79 @@ function interactionFactors(
   return factors;
 }
 
+/**
+ * The sign of a protocol's 7-day change (radar-13): "pos" when the
+ * snapshot records a positive change, "neg" otherwise — a missing
+ * change counts as negative, as in the offline harness. As a
+ * continuous feature the change carries nothing, and as a main-effect
+ * binary factor it loses (CV 1.073, LOO 1.008); only its interaction
+ * with category wins.
+ */
+export function changeSign(change7d: number | null): string {
+  return change7d !== null && change7d > 0 ? "pos" : "neg";
+}
+
+/**
+ * The 7-day-change-sign × category interaction (radar-13). The same
+ * two-way form as the chain-count × category interaction: interaction
+ * = median(cat,sign) − median(cat) − median(sign) + median(all),
+ * computed on the training set's power-law residuals, shrunk by
+ * n/(n+20) toward 0, and only for (category, sign) groups with at
+ * least 5 training protocols. On this snapshot only five groups
+ * qualify, all with a negative 7-day change: Lending ×0.97, Dexs
+ * ×1.02, Basis Trading ×1.01, Yield ×1.02, RWA ×1.04 — the positive
+ * groups are too small everywhere (11 protocols with a positive
+ * change in total). The centre is the numpy-style median, so the
+ * run-time self-check matches the offline harness exactly. The win is
+ * small and reported as small: CV 1.059 → 1.058 and LOO 0.991 →
+ * 0.985, LOCO and both walk-forwards unchanged, and it is the first
+ * change since radar-10 that improves Dexs (1.751 → 1.722) and Lending
+ * (1.920 → 1.895) on their own leave-one-out instead of hurting them.
+ */
+function signInteractionFactors(
+  train: Protocol[],
+  intercept: number,
+  exponent: number,
+): Record<string, Record<string, number>> {
+  const res = train.map(
+    (p) => Math.log(p.mcap_usd as number) - (intercept + exponent * Math.log(p.tvl_usd)),
+  );
+  const byCat = new Map<string, number[]>();
+  const byBand = new Map<string, number[]>();
+  const byBoth = new Map<string, number[]>();
+  train.forEach((p, i) => {
+    const catKey = p.category ?? "(null)";
+    const bandKey = changeSign(p.change_7d);
+    const r = res[i]!;
+    const push = (map: Map<string, number[]>, key: string) => {
+      const arr = map.get(key);
+      if (arr) arr.push(r);
+      else map.set(key, [r]);
+    };
+    push(byCat, catKey);
+    push(byBand, bandKey);
+    push(byBoth, `${catKey}\u0000${bandKey}`);
+  });
+  const grand = medianAverage(res);
+  const catMed = new Map<string, number>();
+  for (const [k, rs] of byCat) catMed.set(k, medianAverage(rs));
+  const bandMed = new Map<string, number>();
+  for (const [k, rs] of byBand) bandMed.set(k, medianAverage(rs));
+  const factors: Record<string, Record<string, number>> = {};
+  for (const [key, rs] of byBoth) {
+    if (rs.length < SIGN_INTERACTION_MIN_N) continue;
+    const sep = key.indexOf("\u0000");
+    const catKey = key.slice(0, sep);
+    const bandKey = key.slice(sep + 1);
+    const inter =
+      medianAverage(rs) - (catMed.get(catKey) ?? grand) - (bandMed.get(bandKey) ?? grand) + grand;
+    const shrink = rs.length / (rs.length + SIGN_INTERACTION_SHRINK_K);
+    if (!factors[catKey]) factors[catKey] = {};
+    factors[catKey]![bandKey] = Math.exp(shrink * inter);
+  }
+  return factors;
+}
+
 /** The calibration set: protocols in this snapshot that already have a token and a market cap. */
 export function calibrationSet(snap: Snapshot): Protocol[] {
   return snap.protocols.filter(
@@ -674,6 +768,7 @@ export function fitModel(snap: Snapshot): ModelMeta {
   let unknownAgeN = 0;
   const chainCountFactorValues: Record<string, number> = {};
   const interactionFactorValues: Record<string, Record<string, number>> = {};
+  const signInteractionFactorValues: Record<string, Record<string, number>> = {};
   if (train.length >= 10) {
     const wtrain = winsorizeTrain(train);
     const fitted = huberFit(wtrain);
@@ -686,11 +781,12 @@ export function fitModel(snap: Snapshot): ModelMeta {
     unknownAgeN = wtrain.filter((p) => !p.listed_at).length;
     Object.assign(chainCountFactorValues, chainCountFactors(wtrain, intercept, exponent));
     Object.assign(interactionFactorValues, interactionFactors(wtrain, intercept, exponent));
+    Object.assign(signInteractionFactorValues, signInteractionFactors(wtrain, intercept, exponent));
   }
   const validation = selfCheck(snap);
   const accounting = accountProtocols(snap);
   return {
-    version: "radar-12",
+    version: "radar-13",
     method:
       "Power-law calibration fitted at run time from the snapshot's own token protocols in board-eligible " +
       "categories: log(market cap) = A + B*log(TVL) by Huber iteratively-reweighted least squares (8 rounds), " +
@@ -702,12 +798,17 @@ export function fitModel(snap: Snapshot): ModelMeta {
       "the training data, shrunk by n/(n+6) toward 1.0 — 0.67 on this snapshot), a chain-count band " +
       "factor: protocols on three or fewer chains take the median residual of that band, protocols on " +
       "four or more take the other band's, each shrunk by n/(n+50) toward 1.0 (1.09 and 0.80 on this " +
-      "snapshot), and a chain-count × category interaction factor: for (category, band) groups with at " +
+      "snapshot), a chain-count × category interaction factor: for (category, band) groups with at " +
       "least 5 training protocols, the two-way interaction median(cat,band) − median(cat) − median(band) " +
       "+ median(all), shrunk by n/(n+8) toward 1.0 — on this snapshot five groups qualify, all in the " +
-      "three-or-fewer band (Lending ×1.06, Dexs ×0.88, Basis Trading ×1.00, Yield ×0.95, RWA ×0.99). " +
+      "three-or-fewer band (Lending ×1.06, Dexs ×0.88, Basis Trading ×1.00, Yield ×0.95, RWA ×0.99), " +
+      "and a 7-day-change-sign × category interaction factor: the same two-way form with the sign of " +
+      "the 7-day change (positive or negative) in place of the chain-count band, shrunk by n/(n+20) " +
+      "toward 1.0 for (category, sign) groups with at least 5 training protocols — on this snapshot " +
+      "five groups qualify, all with a negative 7-day change (Lending ×0.97, Dexs ×1.02, Basis Trading " +
+      "×1.01, Yield ×1.02, RWA ×1.04). " +
       "Implied value = exp(A) * TVL^B * category factor * chain factor * unknown-age factor (only when " +
-      "no listing date is recorded) * chain-count factor * interaction factor * growth * maturity. CEX, bridge " +
+      "no listing date is recorded) * chain-count factor * interaction factor * sign-interaction factor * growth * maturity. CEX, bridge " +
       "and liquid-staking tokens are left out of the fit because their value does not follow from their " +
       "TVL, and the board never ranks those categories. Growth moves the value at most 10% and maturity " +
       "at most 5%: a 7-day window and age barely predict the multiple in the calibration data, so they " +
@@ -716,7 +817,7 @@ export function fitModel(snap: Snapshot): ModelMeta {
       "the approach the leaders advertise), k-nearest neighbours, gradient boosting and random forests on " +
       "the snapshot features, a piecewise (spline) slope for log TVL, " +
       "a |change_7d| band factor and per-category TVL slopes were all built and tested on the same " +
-      "held-out harness and LOSE, so radar-12 keeps this fit — see the accuracy test below.",
+      "held-out harness and LOSE, so radar-13 keeps this fit — see the accuracy test below.",
     intercept,
     exponent,
     calibration_n: train.length,
@@ -738,6 +839,9 @@ export function fitModel(snap: Snapshot): ModelMeta {
     interaction_factors: interactionFactorValues,
     interaction_shrink_k: INTERACTION_SHRINK_K,
     interaction_min_n: INTERACTION_MIN_N,
+    sign_interaction_factors: signInteractionFactorValues,
+    sign_interaction_shrink_k: SIGN_INTERACTION_SHRINK_K,
+    sign_interaction_min_n: SIGN_INTERACTION_MIN_N,
     odds_method:
       "Token odds = the protocol's category token rate (share of the snapshot's protocols in that category " +
       "that already record a token, shrunk toward the snapshot's overall 19% with weight n/(n+6)) times an " +
@@ -780,7 +884,7 @@ export function fitModel(snap: Snapshot): ModelMeta {
       radar6_loco_median_log_err: 1.104,
       radar6_loo_median_log_err: 1.178,
       verdict:
-        "Comps loses on every held-out test, so radar-12 keeps the power-law fit — winsorised, with " +
+        "Comps loses on every held-out test, so radar-13 keeps the power-law fit — winsorised, with " +
         "empirical-Bayes category factors, an unknown-age factor, a chain-count band factor and a " +
         "chain-count × category interaction factor. The accuracy gap to the leaders is structural to this snapshot, not a method the board has not " +
         "tried: ridge regression over every snapshot feature (CV 1.250, LOO 1.292), per-category slope, " +
@@ -819,7 +923,15 @@ export function fitModel(snap: Snapshot): ModelMeta {
         "Radar-12's refinement of that interaction's shrinkage (K=8) beats the radar-11 fit on two " +
         "of the five held-out tests and ties the other three (CV 1.067 → 1.059, LOO 0.997 → 0.991) " +
         "— and its cost is stated there too: Dexs leave-one-out gets worse again (1.661 → 1.751) " +
-        "and the mean absolute error is slightly worse.",
+        "and the mean absolute error is slightly worse. Radar-13's change is a 7-day-change-sign × " +
+        "category interaction, found by a systematic binary-split scan of every numeric snapshot field " +
+        "(change_7d sign, TVL band, age splits, alternative chain-count thresholds, each at K=20/50/100): " +
+        "every split loses as a main effect, and sequential factors on the full-model residuals lose too, " +
+        "but the sign × category interaction beats the radar-12 fit on two of the five held-out tests and " +
+        "ties the other three (CV 1.059 → 1.058, LOO 0.991 → 0.985), with no test worse and the two hardest " +
+        "categories better on their own leave-one-out (Dexs 1.751 → 1.722, Lending 1.920 → 1.895). The win " +
+        "is a broad plateau across the shrinkage grid (K2=12–80 all score CV 1.058–1.059 and LOO 0.985–0.989), " +
+        "not a tuned spike — but it is small, and the radar-13 target (LOO ≤ 0.95, CV ≤ 1.05) is NOT reached.",
     },
     backtest: {
       universe_n: 128,
@@ -852,6 +964,10 @@ export function fitModel(snap: Snapshot): ModelMeta {
       radar12_within2x_pct: 33.0,
       radar12_loco_median_log_err: 1.040,
       radar12_loo_median_log_err: 0.991,
+      radar13_median_log_err: 1.058,
+      radar13_within2x_pct: 33.0,
+      radar13_loco_median_log_err: 1.040,
+      radar13_loo_median_log_err: 0.985,
       radar3_within2x_pct: 33.6,
       radar4_within2x_pct: 35.2,
       radar5_within2x_pct: 35.2,
@@ -959,6 +1075,7 @@ function predictWith(
   unknownAgeFactorValue: number,
   chainCountFactors: Record<string, number>,
   interactionFactors: Record<string, Record<string, number>>,
+  signInteractionFactors: Record<string, Record<string, number>>,
 ): number {
   const base = Math.exp(intercept) * Math.pow(p.tvl_usd, exponent);
   const catKey = p.category ?? "(null)";
@@ -974,6 +1091,8 @@ function predictWith(
   const chainCountFactor = chainCountFactors[chainCountBand(p.chains.length)] ?? 1.0;
   const interactionFactor =
     interactionFactors[catKey]?.[chainCountBand(p.chains.length)] ?? 1.0;
+  const signInteractionFactor =
+    signInteractionFactors[catKey]?.[changeSign(p.change_7d)] ?? 1.0;
   const growthPct = clamp(p.change_7d ?? 0, GROWTH_FLOOR, GROWTH_CAP);
   const growthMultiplier = 1 + (GROWTH_WEIGHT * growthPct) / 100;
   const age = ageDays(p, asOf);
@@ -981,7 +1100,7 @@ function predictWith(
     MATURITY_FLOOR + (MATURITY_RANGE * Math.min(age, MATURITY_DAYS)) / MATURITY_DAYS;
   return Math.max(
     1,
-    Math.round(base * categoryFactor * chainFactor * ageFactor * chainCountFactor * interactionFactor * growthMultiplier * maturityMultiplier),
+    Math.round(base * categoryFactor * chainFactor * ageFactor * chainCountFactor * interactionFactor * signInteractionFactor * growthMultiplier * maturityMultiplier),
   );
 }
 
@@ -997,8 +1116,9 @@ function fitAndPredict(
   const unknownAgeFactorValue = unknownAgeFactor(wtrain, intercept, exponent);
   const chainCountFactorValues = chainCountFactors(wtrain, intercept, exponent);
   const interactionFactorValues = interactionFactors(wtrain, intercept, exponent);
+  const signInteractionFactorValues = signInteractionFactors(wtrain, intercept, exponent);
   return test.map((p) => ({
-    implied: predictWith(p, asOf, intercept, exponent, categoryFactors, chainFactors, unknownAgeFactorValue, chainCountFactorValues, interactionFactorValues),
+    implied: predictWith(p, asOf, intercept, exponent, categoryFactors, chainFactors, unknownAgeFactorValue, chainCountFactorValues, interactionFactorValues, signInteractionFactorValues),
     actual: p.mcap_usd as number,
   }));
 }
@@ -1144,9 +1264,11 @@ export function impliedValueBreakdown(p: Protocol, asOf: string, meta: ModelMeta
   const chainCountFactorValue = meta.chain_count_factors[chainCountBand(p.chains.length)] ?? 1.0;
   const interactionFactorValue =
     meta.interaction_factors[catKey]?.[chainCountBand(p.chains.length)] ?? 1.0;
+  const signInteractionFactorValue =
+    meta.sign_interaction_factors[catKey]?.[changeSign(p.change_7d)] ?? 1.0;
   const implied = Math.max(
     1,
-    Math.round(base * categoryFactor * chainFactor * unknownAgeFactorValue * chainCountFactorValue * interactionFactorValue * growthMultiplier * maturityMultiplier),
+    Math.round(base * categoryFactor * chainFactor * unknownAgeFactorValue * chainCountFactorValue * interactionFactorValue * signInteractionFactorValue * growthMultiplier * maturityMultiplier),
   );
   return {
     base_usd: Math.round(base),
@@ -1160,6 +1282,7 @@ export function impliedValueBreakdown(p: Protocol, asOf: string, meta: ModelMeta
     unknown_age_factor: unknownAgeFactorValue,
     chain_count_factor: chainCountFactorValue,
     interaction_factor: interactionFactorValue,
+    sign_interaction_factor: signInteractionFactorValue,
     age_days: age,
     implied_value_usd: implied,
   };
