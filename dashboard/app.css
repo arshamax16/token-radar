@@ -51,17 +51,38 @@ body {
 }
 .lede { color: var(--muted); max-width: 820px; margin: 14px 0 18px; font-size: 15px; }
 .lede b { color: var(--ink); }
-.stats { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; }
+/* The validation strip: the model's own held-out checks, computed at
+   run time, sitting on the board's first screen. The integrity strip
+   below it states what the snapshot covers and where its gaps are. */
+.checks { margin: 0 0 12px; }
+.checks h2 {
+  margin: 0 0 6px; font-size: 12px; text-transform: uppercase;
+  letter-spacing: 2px; color: var(--faint);
+}
+.checkrow {
+  display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 7px;
+}
+.checkrow span {
+  background: linear-gradient(180deg, #0d1f16, #0a1520);
+  border: 1px solid var(--accent-dim);
+  border-radius: var(--radius); padding: 6px 11px; font-size: 12px; color: var(--muted);
+}
+.checkrow span b { color: var(--accent); font-variant-numeric: tabular-nums; }
+.checkrow.integrity span {
+  background: var(--panel); border-color: var(--line);
+}
+.checkrow.integrity span b { color: var(--ink); }
+.stats { display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px; }
 .stat {
   background: linear-gradient(180deg, var(--panel2), var(--panel));
   border: 1px solid var(--line);
-  border-radius: var(--radius); padding: 11px 14px;
+  border-radius: var(--radius); padding: 8px 12px;
 }
-.stat b { display: block; font-size: 22px; color: var(--accent); font-variant-numeric: tabular-nums; }
+.stat b { display: block; font-size: 20px; color: var(--accent); font-variant-numeric: tabular-nums; }
 .stat span { font-size: 12px; color: var(--muted); line-height: 1.35; display: block; }
 /* The value distribution: the top 6 implied values as bars, so the
    board's shape is visible before the table. */
-.dist { margin: 18px 0 4px; }
+.dist { margin: 14px 0 2px; }
 .dist h2 {
   margin: 0 0 8px; font-size: 12px; text-transform: uppercase;
   letter-spacing: 2px; color: var(--faint);
@@ -135,6 +156,13 @@ td .sub { display: block; color: var(--faint); font-size: 12px; }
 .badge.farm { background: var(--accent); color: #03241a; }
 .badge.thin { background: var(--amber); color: #3a2503; }
 .badge.skip { background: #2a3648; color: var(--muted); border: 1px solid var(--line); }
+/* Token odds: a launch is likelier in a token-heavy category while the
+   protocol is young — green above 15%, amber above 5%, grey below. */
+.odds { font-weight: 800; font-variant-numeric: tabular-nums; }
+.odds.high { color: var(--accent); }
+.odds.mid { color: var(--amber); }
+.odds.low { color: var(--faint); }
+td.range { color: var(--muted); font-size: 13px; }
 .detail {
   background: var(--panel2); border: 1px solid var(--accent-dim);
   border-radius: var(--radius); padding: 20px 22px; margin-bottom: 16px;
@@ -181,5 +209,6 @@ footer { max-width: 1120px; margin: 0 auto; padding: 8px 28px 30px; color: var(-
   .top, .views, .controls, main, footer { padding-left: 14px; padding-right: 14px; }
   .stats { grid-template-columns: repeat(2, 1fr); }
   .dist-row { grid-template-columns: 110px 1fr 56px; }
-  th:nth-child(6), td:nth-child(6) { display: none; }
+  th:nth-child(6), td:nth-child(6),
+  th:nth-child(9), td:nth-child(9) { display: none; }
 }

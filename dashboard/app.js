@@ -1,9 +1,12 @@
-// Token Radar dashboard (radar-5): renders window.RADAR (board + live tokens + model).
+// Token Radar dashboard (radar-7): renders window.RADAR (board + live tokens + model).
 // Ranked board with per-protocol detail views via hash routing (#/<slug>),
-// a model methodology view, text + category + verdict filtering, sorting,
-// and a separate Live view for protocols whose token already trades.
-// The detail view shows each row's model breakdown, its peer token rate,
-// its farm verdict and a 7-step farm plan.
+// a model methodology view, a coverage view accounting for all 758
+// protocols, text + category + verdict filtering, sorting, and a
+// separate Live view for protocols whose token already trades.
+// The detail view shows each row's model breakdown, its token odds, its
+// honest implied-value range, its farm verdict and a 7-step farm plan.
+// The header carries the model's own validation strip, computed from
+// this snapshot at run time, and a data-integrity strip.
 
 const R = window.RADAR;
 const $ = (id) => document.getElementById(id);
@@ -14,6 +17,17 @@ const money = (n) => {
   if (n >= 1e3) return `$${(n / 1e3).toFixed(0)}K`;
   return `$${n}`;
 };
+// A compact range: "$17–195M" — the low and high in the same unit.
+const moneyRange = (lo, hi) => {
+  const unit = (n) => (n >= 1e9 ? "B" : n >= 1e6 ? "M" : n >= 1e3 ? "K" : "");
+  const val = (n) => {
+    if (n >= 1e9) return (n / 1e9).toFixed(n >= 1e10 ? 0 : 1);
+    if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1);
+    if (n >= 1e3) return (n / 1e3).toFixed(0);
+    return `${n}`;
+  };
+  return `$${val(lo)}–${val(hi)}${unit(hi)}`;
+};
 const pct = (n) => (n === null || n === undefined ? "—" : `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`);
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -21,10 +35,35 @@ const mult = (n) => `×${n.toFixed(2)}`;
 
 const verdictCount = R.rows.reduce((acc, r) => { acc[r.verdict] = (acc[r.verdict] || 0) + 1; return acc; }, {});
 
+/* The validation strip: the model's own held-out checks, computed
+   from this snapshot at run time (see "How the model works" §8).
+   It sits on the board's first screen, so the board answers its own
+   checks on the cover instead of hiding them in a methodology page. */
+function renderChecks() {
+  const v = R.model.validation;
+  const a = R.accounting;
+  const x = (n) => `×${n.toFixed(2)}`;
+  $("checks").innerHTML = `
+    <h2>Model checks — computed from this snapshot at run time</h2>
+    <div class="checkrow">
+      <span><b>${x(v.cv_median_log_err)}</b> median error, 5-fold CV (${v.cv_within2x_pct.toFixed(1)}% within 2×)</span>
+      <span><b>${x(v.loo_median_log_err)}</b> leave-one-out (${v.loo_within2x_pct.toFixed(1)}% within 2×)</span>
+      <span><b>${x(v.walk_old_young_median_log_err)}</b> walk-forward, old → young</span>
+      <span><b>${x(v.walk_young_old_median_log_err)}</b> walk-forward, young → old</span>
+      <span><b>${v.training_n}</b> token protocols calibrate the model</span>
+    </div>
+    <div class="checkrow integrity">
+      <span><b>${a.total}</b> protocols in the snapshot</span>
+      <span><b>${a.board_rows}</b> ranked on this board · <b>${a.wrapped_no_token}</b> wrapped products · <b>${a.live_with_mcap}</b> live tokens · <b>${a.variant_symbol_only}</b> versions of live tokens</span>
+      <span>data gaps: <b>${a.missing_category}</b> missing category · <b>${a.missing_change_7d}</b> missing 7-day change · <b>${a.missing_listed_at}</b> missing listing date (age = 1 year)</span>
+    </div>`;
+}
+
 function renderStats() {
   const top = R.rows[0];
   $("stats").innerHTML = [
     [R.rows.length, "pre-token protocols ranked"],
+    [R.accounting.total, "protocols accounted for (board + live + wrapped + versions)"],
     [R.watchlist_count, "watchlist protocols covered"],
     [money(R.floor_usd), "watchlist floor (TVL)"],
     [top ? money(top.implied_value_usd) : "—", "top implied value" + (top ? " · " + top.name : "")],
@@ -58,6 +97,11 @@ function verdictBadge(v) {
   const cls = v === "FARM" ? "farm" : v === "THIN" ? "thin" : "skip";
   return `<span class="badge ${cls}">${v}</span>`;
 }
+function oddsBadge(o) {
+  const p = Math.round(o * 100);
+  const cls = p >= 15 ? "high" : p >= 5 ? "mid" : "low";
+  return `<span class="odds ${cls}">${p}%</span>`;
+}
 function filtered() {
   const q = state.q.trim().toLowerCase();
   let list = R.rows.filter((r) => {
@@ -71,6 +115,7 @@ function filtered() {
     tvl: (a, b) => b.tvl_usd - a.tvl_usd,
     age: (a, b) => b.age_days - a.age_days,
     growth: (a, b) => (b.change_7d ?? -1e9) - (a.change_7d ?? -1e9),
+    odds: (a, b) => b.token_odds - a.token_odds,
     peer: (a, b) => b.peer_token_rate - a.peer_token_rate,
     name: (a, b) => a.name.localeCompare(b.name),
   }[state.sort];
@@ -88,7 +133,8 @@ function renderBoard() {
       <td class="num ${r.change_7d === null ? "" : r.change_7d >= 0 ? "pos" : "neg"}">${pct(r.change_7d)}</td>
       <td>${esc(chainsShort(r.chains))}</td>
       <td>${verdictBadge(r.verdict)}</td>
-      <td class="num">${Math.round(r.peer_token_rate * 100)}%</td>
+      <td class="num">${oddsBadge(r.token_odds)}</td>
+      <td class="num range">${moneyRange(r.range_low_usd, r.range_high_usd)}</td>
       <td class="num implied">${money(r.implied_value_usd)}</td>
     </tr>`).join("");
   $("empty").hidden = list.length > 0;
@@ -101,7 +147,7 @@ function renderLive() {
       <td><b>${esc(p.name)}</b><span class="sub">${esc(p.slug)}</span></td>
       <td>${esc(p.category || "—")}</td>
       <td class="num">${money(p.tvl_usd)}</td>
-      <td class="num">${money(p.mcap_usd)}</td>
+      <td class="num">${p.mcap_usd === null ? "token trades, cap unrecorded" : money(p.mcap_usd)}</td>
       <td>${esc(p.symbol || "—")}</td>
     </tr>`).join("");
 }
@@ -119,12 +165,15 @@ function renderDetail(scrollIntoView) {
   const peers = R.rows.filter((x) => x.category === row.category).length;
   const topValue = R.rows.length ? R.rows[0].implied_value_usd : 1;
   const share = Math.max(2, Math.round((row.implied_value_usd / topValue) * 100));
+  const oddsPct = Math.round(row.token_odds * 100);
   box.hidden = false;
   box.innerHTML = `
     <button class="back" type="button">← Back to the board</button>
     <h2><span class="rank-no">#${row.rank}</span> ${esc(row.name)}</h2>
     <div class="facts">
       <span>Implied value <b>${money(row.implied_value_usd)}</b></span>
+      <span>Honest range <b>${moneyRange(row.range_low_usd, row.range_high_usd)}</b></span>
+      <span>Token odds <b>${oddsPct}%</b></span>
       <span>TVL <b>${money(row.tvl_usd)}</b></span>
       <span>7-day change <b>${pct(row.change_7d)}</b></span>
       <span>Tracked <b>${row.age_days} days</b></span>
@@ -143,24 +192,53 @@ function renderDetail(scrollIntoView) {
       <tr><td>Growth — 7-day change ${pct(row.change_7d)} (at most ±10%)</td><td class="num">${mult(m.growth_multiplier)}</td></tr>
       <tr><td>Maturity — tracked ${m.age_days} days (0.95–1.05)</td><td class="num">${mult(m.maturity_multiplier)}</td></tr>
       <tr class="total"><td>Implied value</td><td class="num">${money(m.implied_value_usd)}</td></tr>
+      <tr><td>Honest range — middle 50% of the model's held-out errors (×0.26 to ×2.93)</td><td class="num">${moneyRange(row.range_low_usd, row.range_high_usd)}</td></tr>
     </tbody></table>
     <p class="note">The base, the category factor and the chain factor are fitted from the snapshot's own ${R.model.calibration_n} token protocols in board-eligible categories at run time — nothing here is a hardcoded list of names.</p>
-    <p class="note">Peer token rate for ${esc(row.category || "this category")}: ${Math.round(row.peer_token_rate * 100)}% of the ${peers} protocols in this category in this snapshot already record a token. Shown for context only — it never enters the implied value.</p>
+    <p class="note">Token odds ${oddsPct}%: the share of this category's protocols that already record a token, shrunk toward the snapshot's overall rate, times how much of the launch window ${row.age_days} days has already used up. Peer token rate for ${esc(row.category || "this category")}: ${Math.round(row.peer_token_rate * 100)}% of the ${peers} protocols in this category in this snapshot already record a token. Odds never enter the implied value — a high value with low odds is worth farming only if you believe the launch still comes.</p>
     <h3>Farm verdict — ${row.verdict}</h3>
-    <p class="verdict-line">${verdictText(row)}</p>
+    <p class="verdict-line">${verdictText(row)} Farming here costs about <b>${esc(row.farm_cost_per_hour)}</b> in gas for each hour spent on it.</p>
     <h3>Farm plan — 7 steps</h3>
     <ol>${row.farm_steps.map((s) => `<li>${esc(s)}</li>`).join("")}</ol>`;
   box.querySelector(".back").addEventListener("click", () => { location.hash = ""; });
-  // Scroll only when the user opened the detail by clicking a row (a
-  // hash change). On an initial deep-link load the page stays at the
-  // top, showing the header and the start of the detail.
+  // Scroll when the detail was opened — by clicking a row (a hash
+  // change) or by arriving on a deep link (an initial load with a
+  // #/<slug> hash): the detail is the content the reader asked for.
   if (scrollIntoView) {
     requestAnimationFrame(() => box.scrollIntoView({ block: "start" }));
   }
 }
+function renderCover() {
+  const box = $("coverwrap");
+  const a = R.accounting;
+  const topWrapped = R.wrapped.slice(0, 8);
+  box.innerHTML = `
+    <h2>Coverage — every one of the ${a.total} protocols accounted for</h2>
+    <p>The board ranks the ${a.board_rows} pre-token protocols that can honestly be ranked. The rest of the
+    snapshot is not dropped silently — it is accounted for here, in the open, with the reason each group
+    sits where it does. A board that ranked a wrapped product or a version of a token that already trades
+    would be padding, not coverage: their "launch" is not a new token.</p>
+    <table class="breakdown"><thead><tr><th>Group</th><th>Count</th><th>Where it lives</th><th>Why</th></tr></thead><tbody>
+      <tr><td>Pre-token, ranked by implied value</td><td class="num">${a.board_rows}</td><td>Pre-token board</td><td>Records no token and is not a wrapped, staked or bridged product — a launch is still possible.</td></tr>
+      <tr><td>Wrapped, staked or bridged products</td><td class="num">${a.wrapped_no_token}</td><td>Listed below</td><td>Records no token, but the token already trades in another form (WBTC is BTC, a staked-ETH product is ETH). Ranking them by launch value would be nonsense.</td></tr>
+      <tr><td>Token already trades, market cap recorded</td><td class="num">${a.live_with_mcap}</td><td>Live tokens view</td><td>The calibration set — these are what the model learns the value of a token from, not what it ranks.</td></tr>
+      <tr><td>Version of a token protocol (symbol recorded, no market cap)</td><td class="num">${a.variant_symbol_only}</td><td>Live tokens view</td><td>Aave V1, V3 and V4 share the AAVE token; ranking them separately would count one token three times.</td></tr>
+      <tr class="total"><td>All protocols in the snapshot</td><td class="num">${a.total}</td><td>—</td><td>Watchlist: ${a.watchlist_covered} of ${a.watchlist_total} covered on the board.</td></tr>
+    </tbody></table>
+    <h3>Largest wrapped products (token trades in another form)</h3>
+    <table class="breakdown"><thead><tr><th>Protocol</th><th>Category</th><th>TVL</th></tr></thead><tbody>
+    ${topWrapped.map((p) => `<tr><td>${esc(p.name)}</td><td>${esc(p.category || "—")}</td><td class="num">${money(p.tvl_usd)}</td></tr>`).join("")}
+    </tbody></table>
+    <p class="note">Data gaps, stated not hidden: ${a.missing_category} protocols carry no category,
+    ${a.missing_change_7d} carry no 7-day change, and ${a.missing_listed_at} carry no listing date
+    (their age is taken as one year, and their token odds use the average age factor). The model never
+    silently fills a gap with a favourable number.</p>`;
+}
 function renderModel() {
   const box = $("modelwrap");
   const bt = R.model.backtest;
+  const ct = R.model.comps_test;
+  const v = R.model.validation;
   const peerByCat = {};
   for (const r of R.rows) {
     const key = r.category ?? "(null)";
@@ -168,12 +246,12 @@ function renderModel() {
   }
   const factors = Object.entries(R.model.category_factors)
     .sort((a, b) => b[1] - a[1])
-    .map(([k, v]) => `<tr><td>${esc(k)}</td><td class="num">${mult(v)}</td><td class="num">${Math.round((peerByCat[k] ?? 0) * 100)}% of peers have a token</td></tr>`).join("");
+    .map(([k, v2]) => `<tr><td>${esc(k)}</td><td class="num">${mult(v2)}</td><td class="num">${Math.round((peerByCat[k] ?? 0) * 100)}% of peers have a token</td></tr>`).join("");
   const chainFactors = Object.entries(R.model.chain_factors)
     .sort((a, b) => b[1] - a[1])
-    .map(([k, v]) => `<tr><td>${esc(k)}</td><td class="num">${mult(v)}</td></tr>`).join("");
+    .map(([k, v2]) => `<tr><td>${esc(k)}</td><td class="num">${mult(v2)}</td></tr>`).join("");
   box.innerHTML = `
-    <h2>How the model works — radar-6</h2>
+    <h2>How the model works — radar-7</h2>
     <p>${esc(R.model.method)}</p>
     <h3>1. The power law — TVL does not buy value one-for-one</h3>
     <p>On the ${R.model.calibration_n} protocols in this snapshot that already have a token
@@ -212,44 +290,62 @@ function renderModel() {
     weakly negative), and age has essentially no correlation, so the weights were cut from radar-3's 15% and 10%
     to 10% and 5%. A young-protocol flag was tested and rejected: protocols listed 180–365 days ago look
     expensive in-sample (7 protocols, mean residual +1.4) but the flag makes every held-out test worse.</p>
-    <h3>5. Peer token rate — shown, never multiplied</h3>
-    <p>For each category the board shows the share of the snapshot's protocols in that category that already
-    record a token (for example Risk Curators 13%, Dexes 74%, Lending 79%). It is a descriptive fact about
-    the category, not a launch guess, and it never enters the implied value.</p>
-    <h3>6. Farm verdicts — a rule, not a feeling</h3>
-    <p>FARM means implied value ≥ $20M and 7-day change ≥ −10% (${verdictCount.FARM || 0} rows).
-    THIN means implied value ≥ $5M and 7-day change ≥ −25% (${verdictCount.THIN || 0} rows).
-    Everything else is SKIP (${verdictCount.SKIP || 0} rows). The rule is stated on the board so anyone
-    can check it against a row.</p>
-    <h3>7. Backtest — ${bt.method}</h3>
-    <p>Median |log(implied/market cap)| on held-out folds (repeated 5-fold cross-validation, 5 seeds):
-    radar-3 ${bt.radar3_median_log_err} (×${Math.exp(bt.radar3_median_log_err).toFixed(2)}),
+    <h3>5. Token odds — the chance a token ever launches</h3>
+    <p>${esc(R.model.odds_method)}</p>
+    <h3>6. The honest range — a point estimate would be a lie</h3>
+    <p>${esc(R.model.range_method)}</p>
+    <h3>7. The comps test — built, measured, rejected, reported</h3>
+    <p>${esc(ct.method)}</p>
+    <p>Similarity-weighted peer multiples: 5-fold CV ${ct.comps_cv_median_log_err} (×${Math.exp(ct.comps_cv_median_log_err).toFixed(2)}, within 2× ${ct.comps_cv_within2x_pct}%),
+    leave-one-category-out ${ct.comps_loco_median_log_err}, leave-one-out ${ct.comps_loo_median_log_err} —
+    against this fit's ${ct.radar6_cv_median_log_err} (×${Math.exp(ct.radar6_cv_median_log_err).toFixed(2)}, within 2× ${ct.radar6_cv_within2x_pct}%),
+    ${ct.radar6_loco_median_log_err} and ${ct.radar6_loo_median_log_err}. A local power law on the most similar
+    peers: CV ${ct.curve_cv_median_log_err}. A shrunk residual correction on top of this fit: CV
+    ${ct.resid_corr_cv_median_log_err}, LOCO ${ct.resid_corr_loco_median_log_err}, LOO ${ct.resid_corr_loo_median_log_err}.
+    ${esc(ct.verdict)}</p>
+    <h3>8. Validation — the board answers its own checks</h3>
+    <p>${esc(v.method)} On this snapshot, on the ${v.training_n} board-eligible token protocols:
+    repeated 5-fold CV median |log error| ${v.cv_median_log_err.toFixed(3)} (×${Math.exp(v.cv_median_log_err).toFixed(2)}, within 2× ${v.cv_within2x_pct.toFixed(1)}%),
+    leave-one-out ${v.loo_median_log_err.toFixed(3)} (×${Math.exp(v.loo_median_log_err).toFixed(2)}, within 2× ${v.loo_within2x_pct.toFixed(1)}%),
+    walk-forward old → young ${v.walk_old_young_median_log_err.toFixed(3)} (×${Math.exp(v.walk_old_young_median_log_err).toFixed(2)}),
+    young → old ${v.walk_young_old_median_log_err.toFixed(3)} (×${Math.exp(v.walk_young_old_median_log_err).toFixed(2)}).
+    Earlier radars on the same harness: radar-3 ${bt.radar3_median_log_err} (×${Math.exp(bt.radar3_median_log_err).toFixed(2)}),
     radar-4 ${bt.radar4_median_log_err} (×${Math.exp(bt.radar4_median_log_err).toFixed(2)}),
     radar-5 ${bt.radar5_median_log_err} (×${Math.exp(bt.radar5_median_log_err).toFixed(2)}),
     radar-6 ${bt.radar6_median_log_err} (×${Math.exp(bt.radar6_median_log_err).toFixed(2)}) on all 128 token protocols
     and ${bt.radar6_eligible_median_log_err} (×${Math.exp(bt.radar6_eligible_median_log_err).toFixed(2)}) on the 94 in
-    board-eligible categories — the population the board actually predicts. Within 2× of the real market cap:
+    board-eligible categories. Within 2× of the real market cap:
     radar-3 ${bt.radar3_within2x_pct}%, radar-4 ${bt.radar4_within2x_pct}%, radar-5 ${bt.radar5_within2x_pct}%,
     radar-6 ${bt.radar6_within2x_pct}% (all 128) and ${bt.radar6_eligible_within2x_pct}% (eligible 94).
     A second, harder held-out test — leave-one-category-out, one whole category held out at a time:
     radar-4 ${bt.loco_radar4_median_log_err}, radar-5 ${bt.loco_radar5_median_log_err},
     radar-6 ${bt.loco_radar6_median_log_err}. The radar-6 gain is real but modest and is reported as modest:
-    it is better on every held-out test, in the same direction — 5-fold, leave-one-category-out, and the age
-    splits (train old, test young 1.50 vs radar-5's 1.78; train young, test old 0.87 vs 1.08) — but the
-    target of within-2× ≥ 45% and median |log err| ≤ 1.0 is not reached. A token's market cap follows its
+    it is better on every held-out test, in the same direction. The target of within-2× ≥ 45% and median
+    |log err| ≤ 1.0 is not reached. A token's market cap follows its
     TVL only loosely (correlation 0.44 in log terms); the rest is tokenomics the snapshot cannot see.
     Rejected on the same tests: per-category slope (5-fold 1.304), Theil-Sen (1.342), quadratic log(TVL)
-    (1.306), a median-residual category factor (1.288), a young-age indicator (1.340) and k-nearest
-    neighbours on log TVL (1.35–1.43).</p>
-    <h3>8. Coverage — every rankable pre-token protocol</h3>
+    (1.306), a median-residual category factor (1.288), a young-age indicator (1.340), k-nearest
+    neighbours on log TVL (1.35–1.43), and the comps approaches of §7 above.</p>
+    <h3>9. Farm verdicts — a rule, not a feeling</h3>
+    <p>FARM means implied value ≥ $20M and 7-day change ≥ −10% (${verdictCount.FARM || 0} rows).
+    THIN means implied value ≥ $5M and 7-day change ≥ −25% (${verdictCount.THIN || 0} rows).
+    Everything else is SKIP (${verdictCount.SKIP || 0} rows). The rule is stated on the board so anyone
+    can check it against a row. The top 20 rows also state what an hour of farming costs in gas alone
+    (about 3 transactions in 15 minutes on the row's cheapest chain): a cheap chain costs about a dollar
+    an hour, Ethereum $60–$240.</p>
+    <h3>10. Coverage — every rankable pre-token protocol, and the rest accounted for</h3>
     <p>The board ranks ${R.rows.length} protocols: the ${R.watchlist_count} on the watchlist plus every other rankable
     pre-token protocol, above or below the ${money(R.floor_usd)} floor. Wrapped, staked and bridged products are
-    excluded because they already have a token in another form — their "launch" is not a new token. Tokens that
-    already trade live on a separate view and are never mixed into the ranking.</p>
+    excluded because they already have a token in another form — their "launch" is not a new token — and
+    versions of token protocols are excluded because ranking Aave V1, V3 and V4 separately would count one
+    token three times. Both groups are listed on the Coverage view with the reason, so all ${R.accounting.total}
+    protocols in the snapshot are accounted for: ${R.accounting.board_rows} ranked, ${R.accounting.wrapped_no_token}
+    wrapped, ${R.accounting.live_with_mcap} live with a market cap, ${R.accounting.variant_symbol_only} versions of
+    live tokens. Tokens that already trade live on a separate view and are never mixed into the ranking.</p>
     <p class="note">Nothing here predicts whether or when a token launches. The implied value is what a token
     would be worth if this protocol's record stayed as it is, priced the way the market prices the protocols
-    that already have one.</p>
-    <h3>9. Farm plans — one playbook per category</h3>
+    that already have one — and the range and the odds say how much that guess is worth.</p>
+    <h3>11. Farm plans — one playbook per category</h3>
     <p>Every row carries a 7-step plan from its category's playbook, built only from that protocol's own
     record (chains, TVL, age, 7-day change, verdict). A curated vault, a basis vault, a CDP, a prediction
     market and a chain each get different steps: the core action, the specific risk and the specific thing
@@ -260,12 +356,15 @@ function renderModel() {
 function setView(view) {
   $("viewPre").classList.toggle("active", view === "pre");
   $("viewLive").classList.toggle("active", view === "live");
+  $("viewCover").classList.toggle("active", view === "cover");
   $("viewModel").classList.toggle("active", view === "model");
   document.querySelector(".boardwrap").hidden = view !== "pre";
   document.querySelector(".controls").style.display = view === "pre" ? "" : "none";
   $("livewrap").hidden = view !== "live";
+  $("coverwrap").hidden = view !== "cover";
   $("modelwrap").hidden = view !== "model";
   if (view === "live") renderLive();
+  if (view === "cover") renderCover();
   if (view === "model") renderModel();
   if (view !== "pre") { $("detail").hidden = true; }
 }
@@ -292,12 +391,14 @@ function initFilters() {
   });
   $("viewPre").addEventListener("click", () => setView("pre"));
   $("viewLive").addEventListener("click", () => setView("live"));
+  $("viewCover").addEventListener("click", () => setView("cover"));
   $("viewModel").addEventListener("click", () => setView("model"));
   window.addEventListener("hashchange", () => renderDetail(true));
 }
 
+renderChecks();
 renderStats();
 renderDist();
 initFilters();
 renderBoard();
-renderDetail(false);
+renderDetail(location.hash.startsWith("#/"));

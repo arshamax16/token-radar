@@ -1,15 +1,17 @@
 // Token Radar entrypoint (Node 22, standard library only).
 //
 // Reads the sealed snapshot, scores every pre-token protocol with the
-// radar-6 model in lib/model.ts (Huber power-law fit on board-eligible
-// token protocols + category and chain factors, per-category
-// farm playbooks in lib/plans.ts), and writes the ranked board, the
-// dashboard data, the dashboard files, the screenshots and dossier.json
-// into the output directory. Run twice, it must write identical bytes.
+// radar-7 model in lib/model.ts (Huber power-law fit on board-eligible
+// token protocols + category and chain factors, token odds from the
+// peers' launch record, an honest implied-value range from the model's
+// own held-out errors, per-category farm playbooks in lib/plans.ts),
+// and writes the ranked board, the dashboard data, the dashboard
+// files, the screenshots and dossier.json into the output directory.
+// Run twice, it must write identical bytes.
 
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { buildBoard, boardIssues, dataScript, fitModel } from "./lib/model.ts";
+import { buildBoard, boardIssues, dataScript, fitModel, accountProtocols } from "./lib/model.ts";
 import type { Snapshot } from "./lib/model.ts";
 import { buildDossier } from "./vendor/makefun-board.ts";
 
@@ -56,8 +58,11 @@ function main(): void {
   }
 
   // The value model calibrates itself from the snapshot's own token
-  // protocols before it scores anything pre-token.
+  // protocols before it scores anything pre-token. fitModel also runs
+  // the program's own held-out validation and the 758-protocol
+  // accounting, so the board can answer its own checks on the cover.
   const meta = fitModel(snap!);
+  const accounting = accountProtocols(snap!);
   const rows = buildBoard(snap!, meta);
   // A watchlist slug the snapshot never names is a data problem, not a
   // board problem: fail loudly instead of silently covering 39 of 40.
@@ -89,7 +94,7 @@ function main(): void {
   writeFileSync(join(outDir, "board.json"), `${JSON.stringify({ rows }, null, 2)}\n`, "utf8");
   const boardBytes = statSync(join(outDir, "board.json")).size;
   if (boardBytes > 8 * 1024 * 1024) fail(`board.json is ${boardBytes} bytes, over the 8 MiB cap`);
-  writeFileSync(join(outDir, "data.js"), dataScript(snap!, rows, meta), "utf8");
+  writeFileSync(join(outDir, "data.js"), dataScript(snap!, rows, meta, accounting), "utf8");
   cpSync(dashSrc, join(outDir, "dashboard"), { recursive: true });
   cpSync(shotsSrc, join(outDir, "screenshots"), { recursive: true });
 
@@ -105,10 +110,13 @@ function main(): void {
   if (!existsSync(join(outDir, "dashboard", "index.html"))) fail("dashboard/index.html did not copy to the output");
 
   const watchRows = rows.filter((r) => snap!.watchlist.includes(r.slug)).length;
+  const v = meta.validation;
   console.log(
     `token-radar: ${snap!.protocols.length} protocols, ${watchRows} watchlist rows, ${rows.length} rows scored, ` +
-      `model radar-6 fit on ${meta.calibration_n} token protocols (A=${meta.intercept.toFixed(3)}, B=${meta.exponent.toFixed(3)}), ` +
-      `top implied $${rows[0]!.implied_value_usd.toLocaleString("en-US")}`,
+      `model radar-7 fit on ${meta.calibration_n} token protocols (A=${meta.intercept.toFixed(3)}, B=${meta.exponent.toFixed(3)}), ` +
+      `top implied $${rows[0]!.implied_value_usd.toLocaleString("en-US")}, ` +
+      `self-check CV ${v.cv_median_log_err.toFixed(3)} (within 2x ${v.cv_within2x_pct.toFixed(1)}%), ` +
+      `LOO ${v.loo_median_log_err.toFixed(3)}, walk-forward old->young ${v.walk_old_young_median_log_err.toFixed(3)}`,
   );
 }
 

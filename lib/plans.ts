@@ -211,6 +211,21 @@ export function buildCtx(
 
 const capStep = (s: string): string => (s.length > 600 ? `${s.slice(0, 597).trimEnd()}…` : s);
 
+/**
+ * Radar-7: add the hourly farming cost to the deposit step (step 2)
+ * of a top-20 row's plan. The cost is gas alone for an hour spent
+ * farming — about 3 transactions in 15 minutes on the row's cheapest
+ * chain — so a cheap chain costs about a dollar an hour and Ethereum
+ * costs $60–$240. Only the top 20 carry it: the other rows state
+ * their gas per transaction in step 1 already.
+ */
+export function addHourlyCost(steps: string[], costPerHour: string): string[] {
+  const out = [...steps];
+  const sentence = ` Farming here costs about ${costPerHour} in gas for each hour spent on it.`;
+  out[1] = capStep(`${out[1]}${sentence}`);
+  return out;
+}
+
 /* ------------------------------------------------------------------ */
 /* Playbooks. Each is 7 steps, written for its category's own action, */
 /* risk and check. Shared shapes (history, quests, claim) are the     */
