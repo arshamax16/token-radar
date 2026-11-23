@@ -139,11 +139,12 @@ function renderDetail(scrollIntoView) {
     <table class="breakdown"><tbody>
       <tr><td>Power-law base — exp(${R.model.intercept.toFixed(2)}) × TVL^${R.model.exponent.toFixed(2)}</td><td class="num">${money(m.base_usd)}</td></tr>
       <tr><td>Category factor — ${esc(m.category || "no category")} (shrunk toward 1.0)</td><td class="num">${mult(m.category_factor)}</td></tr>
+      <tr><td>Chain factor — ${esc(m.chains.join(", ") || "no chain")} (mean of the chains' factors, shrunk toward 1.0)</td><td class="num">${mult(m.chain_factor)}</td></tr>
       <tr><td>Growth — 7-day change ${pct(row.change_7d)} (at most ±10%)</td><td class="num">${mult(m.growth_multiplier)}</td></tr>
       <tr><td>Maturity — tracked ${m.age_days} days (0.95–1.05)</td><td class="num">${mult(m.maturity_multiplier)}</td></tr>
       <tr class="total"><td>Implied value</td><td class="num">${money(m.implied_value_usd)}</td></tr>
     </tbody></table>
-    <p class="note">The base and the category factor are fitted from the snapshot's own ${R.model.calibration_n} token protocols at run time — nothing here is a hardcoded list of names.</p>
+    <p class="note">The base, the category factor and the chain factor are fitted from the snapshot's own ${R.model.calibration_n} token protocols in board-eligible categories at run time — nothing here is a hardcoded list of names.</p>
     <p class="note">Peer token rate for ${esc(row.category || "this category")}: ${Math.round(row.peer_token_rate * 100)}% of the ${peers} protocols in this category in this snapshot already record a token. Shown for context only — it never enters the implied value.</p>
     <h3>Farm verdict — ${row.verdict}</h3>
     <p class="verdict-line">${verdictText(row)}</p>
@@ -168,50 +169,79 @@ function renderModel() {
   const factors = Object.entries(R.model.category_factors)
     .sort((a, b) => b[1] - a[1])
     .map(([k, v]) => `<tr><td>${esc(k)}</td><td class="num">${mult(v)}</td><td class="num">${Math.round((peerByCat[k] ?? 0) * 100)}% of peers have a token</td></tr>`).join("");
+  const chainFactors = Object.entries(R.model.chain_factors)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => `<tr><td>${esc(k)}</td><td class="num">${mult(v)}</td></tr>`).join("");
   box.innerHTML = `
-    <h2>How the model works — radar-5</h2>
+    <h2>How the model works — radar-6</h2>
     <p>${esc(R.model.method)}</p>
     <h3>1. The power law — TVL does not buy value one-for-one</h3>
-    <p>On the ${R.model.calibration_n} protocols in this snapshot that already have a token,
+    <p>On the ${R.model.calibration_n} protocols in this snapshot that already have a token
+    and sit in a board-eligible category,
     log(market cap) = ${R.model.intercept.toFixed(3)} + ${R.model.exponent.toFixed(3)} × log(TVL),
     fitted by Huber robust regression (8 rounds of reweighting). A token's market cap grows like TVL^${R.model.exponent.toFixed(2)}:
-    the implied multiple is about 0.48× at $10M of TVL, 0.16× at $100M, 0.05× at $1B and 0.03× at $3B.
+    the implied multiple is about 0.54× at $10M of TVL, 0.14× at $100M, 0.04× at $1B and 0.02× at $3B.
     A flat 30% of TVL would overvalue the giants roughly tenfold and undervalue small protocols threefold —
     the power law fixes both. Huber downweights the few protocols whose market cap sits far off the line
-    (rain +6.5, xdai-stake-bridge −6.1 in log terms) instead of letting them drag it.</p>
+    (rain +6.4, concentrator −5.0 in log terms) instead of letting them drag it.
+    The fit uses only board-eligible categories: 34 token protocols in CEX, bridge, canonical-bridge and
+    liquid-staking categories are left out, because a CEX token's value does not follow from its exchange's
+    TVL, a bridge token is usually worth ~nothing whatever the bridge holds, and a liquid-staking token
+    tracks its underlying — including them would calibrate the board on protocols whose market cap is
+    structurally decoupled from TVL. The board never ranks those categories anyway.</p>
     <h3>2. Category factors — same TVL, different worth</h3>
     <p>Each category's factor is the shrunk mean of its residuals from the power law, pulled toward 1.0
     with weight n/(n+6) so a thin category cannot swing the value. Categories with no token protocol
     in the snapshot take 1.0. The peer token rate beside each factor is the share of that category's
     protocols that already record a token — shown for context, it never enters the factor or the value.</p>
     <table class="breakdown"><thead><tr><th>Category</th><th>Factor</th><th>Peer token rate</th></tr></thead><tbody>${factors}</tbody></table>
-    <h3>3. Growth and maturity — kept small on purpose</h3>
+    <h3>3. Chain factors — the ecosystem prices the protocol too</h3>
+    <p>Each chain's factor is the shrunk mean of the same residuals over the protocols deployed on that
+    chain, pulled toward 1.0 with weight n/(n+${R.model.chain_shrink_k}); chains with fewer than
+    ${R.model.chain_min_n} token protocols in the fit take no factor. A row's chain factor is the mean of
+    its chains' factors. Protocols on newer, smaller ecosystems price lower at the same TVL
+    (Kava ×0.50, Mantle ×0.57, Monad ×0.57, Berachain ×0.63) while the big ecosystems sit near 1.0
+    (Ethereum ×0.95, Arbitrum ×1.03) — the market prices the chain the protocol lives on, not just the
+    protocol. Chain count was tested and rejected again (its correlation with the residual is 0.09);
+    chain identity is what carries signal.</p>
+    <table class="breakdown"><thead><tr><th>Chain</th><th>Factor</th></tr></thead><tbody>${chainFactors}</tbody></table>
+    <h3>4. Growth and maturity — kept small on purpose</h3>
     <p>Growth moves the value at most 10% (7-day change clamped to ${R.model.growth_floor}%…${R.model.growth_cap}%)
     and age at most 5% (${R.model.maturity_floor.toFixed(2)}–${(R.model.maturity_floor + R.model.maturity_range).toFixed(2)} over ${R.model.maturity_days} days).
     In the calibration data a 7-day window barely predicts the multiple (and its correlation with the residual is
     weakly negative), and age has essentially no correlation, so the weights were cut from radar-3's 15% and 10%
-    to 10% and 5%. Chain count was tested and rejected again: its correlation with the residual is 0.07.</p>
-    <h3>4. Peer token rate — shown, never multiplied</h3>
+    to 10% and 5%. A young-protocol flag was tested and rejected: protocols listed 180–365 days ago look
+    expensive in-sample (7 protocols, mean residual +1.4) but the flag makes every held-out test worse.</p>
+    <h3>5. Peer token rate — shown, never multiplied</h3>
     <p>For each category the board shows the share of the snapshot's protocols in that category that already
     record a token (for example Risk Curators 13%, Dexes 74%, Lending 79%). It is a descriptive fact about
     the category, not a launch guess, and it never enters the implied value.</p>
-    <h3>5. Farm verdicts — a rule, not a feeling</h3>
+    <h3>6. Farm verdicts — a rule, not a feeling</h3>
     <p>FARM means implied value ≥ $20M and 7-day change ≥ −10% (${verdictCount.FARM || 0} rows).
     THIN means implied value ≥ $5M and 7-day change ≥ −25% (${verdictCount.THIN || 0} rows).
     Everything else is SKIP (${verdictCount.SKIP || 0} rows). The rule is stated on the board so anyone
     can check it against a row.</p>
-    <h3>6. Backtest — ${bt.method}</h3>
-    <p>Median |log(implied/market cap)| on held-out folds (5-fold cross-validation):
+    <h3>7. Backtest — ${bt.method}</h3>
+    <p>Median |log(implied/market cap)| on held-out folds (repeated 5-fold cross-validation, 5 seeds):
     radar-3 ${bt.radar3_median_log_err} (×${Math.exp(bt.radar3_median_log_err).toFixed(2)}),
     radar-4 ${bt.radar4_median_log_err} (×${Math.exp(bt.radar4_median_log_err).toFixed(2)}),
-    radar-5 ${bt.radar5_median_log_err} (×${Math.exp(bt.radar5_median_log_err).toFixed(2)}). Within 2× of the real market cap:
-    radar-3 ${bt.radar3_within2x_pct}%, radar-4 ${bt.radar4_within2x_pct}%, radar-5 ${bt.radar5_within2x_pct}%.
+    radar-5 ${bt.radar5_median_log_err} (×${Math.exp(bt.radar5_median_log_err).toFixed(2)}),
+    radar-6 ${bt.radar6_median_log_err} (×${Math.exp(bt.radar6_median_log_err).toFixed(2)}) on all 128 token protocols
+    and ${bt.radar6_eligible_median_log_err} (×${Math.exp(bt.radar6_eligible_median_log_err).toFixed(2)}) on the 94 in
+    board-eligible categories — the population the board actually predicts. Within 2× of the real market cap:
+    radar-3 ${bt.radar3_within2x_pct}%, radar-4 ${bt.radar4_within2x_pct}%, radar-5 ${bt.radar5_within2x_pct}%,
+    radar-6 ${bt.radar6_within2x_pct}% (all 128) and ${bt.radar6_eligible_within2x_pct}% (eligible 94).
     A second, harder held-out test — leave-one-category-out, one whole category held out at a time:
-    radar-4 ${bt.loco_radar4_median_log_err}, radar-5 ${bt.loco_radar5_median_log_err}. The Huber gain is small
-    and is reported as small: it is better on both held-out tests, in the same direction, and stable across
-    3–20 reweighting rounds — a refinement, not a new model. Rejected on the same tests: per-category slope
-    (5-fold 1.356), Theil-Sen (1.342), quadratic log(TVL) (1.306) and a median-residual category factor (1.288).</p>
-    <h3>7. Coverage — every rankable pre-token protocol</h3>
+    radar-4 ${bt.loco_radar4_median_log_err}, radar-5 ${bt.loco_radar5_median_log_err},
+    radar-6 ${bt.loco_radar6_median_log_err}. The radar-6 gain is real but modest and is reported as modest:
+    it is better on every held-out test, in the same direction — 5-fold, leave-one-category-out, and the age
+    splits (train old, test young 1.50 vs radar-5's 1.78; train young, test old 0.87 vs 1.08) — but the
+    target of within-2× ≥ 45% and median |log err| ≤ 1.0 is not reached. A token's market cap follows its
+    TVL only loosely (correlation 0.44 in log terms); the rest is tokenomics the snapshot cannot see.
+    Rejected on the same tests: per-category slope (5-fold 1.304), Theil-Sen (1.342), quadratic log(TVL)
+    (1.306), a median-residual category factor (1.288), a young-age indicator (1.340) and k-nearest
+    neighbours on log TVL (1.35–1.43).</p>
+    <h3>8. Coverage — every rankable pre-token protocol</h3>
     <p>The board ranks ${R.rows.length} protocols: the ${R.watchlist_count} on the watchlist plus every other rankable
     pre-token protocol, above or below the ${money(R.floor_usd)} floor. Wrapped, staked and bridged products are
     excluded because they already have a token in another form — their "launch" is not a new token. Tokens that
@@ -219,7 +249,7 @@ function renderModel() {
     <p class="note">Nothing here predicts whether or when a token launches. The implied value is what a token
     would be worth if this protocol's record stayed as it is, priced the way the market prices the protocols
     that already have one.</p>
-    <h3>8. Farm plans — one playbook per category</h3>
+    <h3>9. Farm plans — one playbook per category</h3>
     <p>Every row carries a 7-step plan from its category's playbook, built only from that protocol's own
     record (chains, TVL, age, 7-day change, verdict). A curated vault, a basis vault, a CDP, a prediction
     market and a chain each get different steps: the core action, the specific risk and the specific thing
