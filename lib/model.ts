@@ -1,37 +1,37 @@
-// Radar-11 value model for the Token Radar board.
+// Radar-12 value model for the Token Radar board.
 //
-// Radar-11 keeps radar-10's board (token odds, honest ranges, all-758
-// coverage, costed farm plans) and the radar-10 fit (winsorised power
+// Radar-12 keeps radar-11's board (token odds, honest ranges, all-758
+// coverage, costed farm plans) and the radar-11 fit (winsorised power
 // law + empirical-Bayes category factors + unknown-age factor +
-// chain-count band factor), and adds one factor the radar-10 accuracy
-// work left on the table: the chain-count × category interaction.
-// The chain-count band factor is a marginal effect — it shifts every
-// protocol on four or more chains down by the same amount, which helps
-// the over-predicted ones and hurts the ones radar-10 already predicted
-// well (every protocol radar-10 hurt most moved by exactly +0.21/+0.22
-// log). The two-way interaction asks whether the band gap differs by
-// category: interaction = median(cat,band) − median(cat) −
-// median(band) + median(all), shrunk by n/(n+12), only for
-// (category, band) groups with at least 5 training protocols. On this
-// snapshot only five groups qualify, all in the three-or-fewer band:
-// Lending ×1.05, Dexs ×0.90, Basis Trading ×1.00, Yield ×0.96, RWA
-// ×0.99. It moves CV 1.133 → 1.067 and LOO 1.023 → 0.997 with LOCO
-// and both walk-forwards unchanged, and the win is a broad plateau
-// across the shrinkage sweep (K=8–20, min_n=5–6), not a tuned spike.
-// The cost is stated, not hidden: Dexs leave-one-out gets worse
-// (1.423 → 1.661), the mean absolute error is slightly worse (LOO
-// 1.519 → 1.526, CV 1.538 → 1.545), and the within-2× shares do not
-// improve (CV 33.2% → 32.8%, LOO 34.0% → 34.0%) — the gain sits in
-// the middle of the error distribution, as in radar-9 and radar-10.
-// The other radar-11 ideas all failed and are documented in the model
-// view: a piecewise (spline) slope for log TVL (one knot: CV 1.123 but
-// LOO 1.147; two knots worse; a shrunk hinge still loses, LOO 1.206),
-// a |change_7d| band factor (walk old→young improves to 0.668 but CV
-// worsens to 1.183 and LOO to 1.145), per-category TVL slopes with
-// shrinkage (CV 1.152, LOO 1.165), and a spline-plus-interaction
-// combination (CV 1.198, LOO 1.186). The target (CV ≤ 1.10, LOO ≤
-// 1.00) is reached on the medians; within-2× ≥ 45% is still not
-// reached.
+// chain-count band factor + chain-count × category interaction), and
+// refines the interaction's shrinkage: K=8 instead of K=12. The
+// refinement sweep around radar-11's optimum (K=6/8/10/12/16/20,
+// min_n=4/5/6/7) finds K=8 with min_n=5 best on both held-out medians:
+// CV 1.067 → 1.059 and LOO 0.997 → 0.991, with LOCO and both
+// walk-forwards unchanged, and the CV win spread across 3 of the 5
+// seeds (one tie, one loss), not one lucky split. The target radar-12
+// set for itself (CV ≤ 1.05, LOO ≤ 0.95) is NOT reached — both medians
+// are close but short — and the gain is small, reported as small.
+// The cost is stated, not hidden: Dexs leave-one-out gets worse again
+// (1.661 → 1.751), the mean absolute error is slightly worse (LOO
+// 1.526 → 1.528, CV 1.545 → 1.547), and the within-2× share on
+// leave-one-out falls (34.0% → 33.0%) — the gain sits in the middle of
+// the error distribution, as in radar-9, radar-10 and radar-11.
+// The other radar-12 ideas all failed and are documented in the model
+// view: gradient boosting and random forests on the snapshot features
+// (a new estimator family, first tried here — best CV 1.286, far from
+// 1.067; a log-space ensemble with the power law also loses, CV 1.116
+// at weight 0.1), TVL per chain instead of total TVL (CV 1.087),
+// an unknown-age × chain-count interaction (CV 1.078), an empirical
+// age-bin factor to recalibrate the maturity curve (CV 1.106–1.143 —
+// the 6–12-month "spike" is two or three extreme protocols, not an age
+// effect), fitting the growth and maturity coefficients instead of the
+// fixed 10%/5% weights (CV 1.091–1.150 — the fitted maturity slope is
+// negative, but the joint fit generalises worse), a post-hoc shrunk
+// growth/maturity correction (CV 1.191–1.233), capping the interaction
+// factor's range (CV 1.096–1.122 — the full range is what wins), and a
+// category × unknown-age interaction (CV 1.081–1.137). The honest range
+// is recalibrated to ×0.22–×2.39.
 //
 // No protocol name is ever hardcoded and no constant is tuned to a
 // name: the same functions score every row. The model calibrates
@@ -133,6 +133,10 @@ export interface ModelMeta {
     radar11_within2x_pct: number;
     radar11_loco_median_log_err: number;
     radar11_loo_median_log_err: number;
+    radar12_median_log_err: number;
+    radar12_within2x_pct: number;
+    radar12_loco_median_log_err: number;
+    radar12_loo_median_log_err: number;
     radar3_within2x_pct: number;
     radar4_within2x_pct: number;
     radar5_within2x_pct: number;
@@ -240,10 +244,16 @@ const UNKNOWN_AGE_SHRINK_K = 6;
  *  old→young (0.823 → 0.999). */
 const CHAIN_COUNT_SHRINK_K = 50;
 /** Shrinkage for the chain-count × category interaction factors: n/(n+K).
- *  K=12 sits in the middle of the plateau (K=8–20 with min_n=5–6 all beat
- *  radar-10 on CV and mostly on LOO); only (category, band) groups with at
- *  least INTERACTION_MIN_N training protocols take a factor. */
-const INTERACTION_SHRINK_K = 12;
+ *  K=8 wins the radar-11 refinement sweep on both held-out medians
+ *  (CV 1.067 → 1.059, LOO 0.997 → 0.991, LOCO and both walk-forwards
+ *  unchanged) and sits in the middle of the plateau (K=6–10 with
+ *  min_n=5 all beat radar-11 on CV, 1.059–1.063; K=8 wins on 3 of the
+ *  5 CV seeds, ties one, loses one). Only (category, band) groups with at
+ *  least INTERACTION_MIN_N training protocols take a factor. The cost
+ *  is stated in the model view: Dexs leave-one-out gets worse again
+ *  (1.661 → 1.751) and the within-2× share on leave-one-out falls
+ *  (34.0% → 33.0%). */
+const INTERACTION_SHRINK_K = 8;
 const INTERACTION_MIN_N = 5;
 /** Winsorisation quantiles for the log(mcap/TVL) multiple: the training
  *  set's own P5/P95 (radar-8). The one or two most extreme multiples
@@ -273,12 +283,12 @@ const THIN_MIN_GROWTH = -25;
  * Range honesty: the middle 50% of the model's own held-out errors.
  * P25/P75 of log(implied/market cap) over the repeated 5-fold CV
  * residuals on the 94 board-eligible token protocols (470
- * out-of-sample predictions): P25 −1.517, P75 +0.897. A row's range
- * is implied × exp(P25) to implied × exp(P75) — 0.22× to 2.45×.
+ * out-of-sample predictions): P25 −1.524, P75 +0.870. A row's range
+ * is implied × exp(P25) to implied × exp(P75) — 0.22× to 2.39×.
  * Half of similar protocols' true values fall inside it.
  */
-const RANGE_LOG_LO = -1.5167028419226196;
-const RANGE_LOG_HI = 0.8973403798565136;
+const RANGE_LOG_LO = -1.5240664384674654;
+const RANGE_LOG_HI = 0.8695709949586536;
 
 /**
  * Token odds: the launch curve read off the snapshot itself.
@@ -565,27 +575,30 @@ function chainCountFactors(
 }
 
 /**
- * The chain-count × category interaction (radar-11). The chain-count band
- * factor is a marginal effect: it shifts every protocol on four or more
- * chains down by the same amount, which helps the over-predicted ones and
- * hurts the ones radar-10 already predicted well (the diagnosis in the
- * model view: every protocol radar-10 hurt most moved by exactly
- * +0.21/+0.22 log). The two-way interaction asks whether the band gap
- * differs by category: interaction = median(cat,band) − median(cat) −
- * median(band) + median(all), computed on the training set's power-law
- * residuals, shrunk by n/(n+12) toward 0, and only for (category, band)
- * groups with at least 5 training protocols. On this snapshot only five
- * groups qualify, all in the three-or-fewer band: Lending ×1.05, Dexs
- * ×0.90, Basis Trading ×1.00, Yield ×0.96, RWA ×0.99 — 35 of 40 groups
+ * The chain-count × category interaction (radar-11, refined in
+ * radar-12). The chain-count band factor is a marginal effect: it
+ * shifts every protocol on four or more chains down by the same amount,
+ * which helps the over-predicted ones and hurts the ones radar-10
+ * already predicted well (the diagnosis in the model view: every
+ * protocol radar-10 hurt most moved by exactly +0.21/+0.22 log). The
+ * two-way interaction asks whether the band gap differs by category:
+ * interaction = median(cat,band) − median(cat) − median(band) +
+ * median(all), computed on the training set's power-law residuals,
+ * shrunk by n/(n+8) toward 0, and only for (category, band) groups
+ * with at least 5 training protocols. On this snapshot only five
+ * groups qualify, all in the three-or-fewer band: Lending ×1.06, Dexs
+ * ×0.88, Basis Trading ×1.00, Yield ×0.95, RWA ×0.99 — 35 of 40 groups
  * take no factor. The centre is the numpy-style median, so the run-time
- * self-check matches the offline harness exactly. It moves CV 1.133 →
- * 1.067 and LOO 1.023 → 0.997 with LOCO and both walk-forwards unchanged,
- * and the win is a broad plateau across the shrinkage sweep (K=8–20,
- * min_n=5–6), not a tuned spike. Reported honestly: Dexs leave-one-out
- * gets worse (1.423 → 1.661), the mean absolute error is slightly worse
- * (LOO 1.519 → 1.526, CV 1.538 → 1.545), and the within-2× shares do not
- * improve (CV 33.2% → 32.8%, LOO 34.0% → 34.0%) — the gain sits in the
- * middle of the error distribution, as in radar-9 and radar-10.
+ * self-check matches the offline harness exactly. Radar-12's refinement
+ * (K=8 instead of 12) moves CV 1.067 → 1.059 and LOO 0.997 → 0.991
+ * with LOCO and both walk-forwards unchanged, and the win is a broad
+ * plateau across the refinement sweep (K=6–10 with min_n=5 all beat
+ * radar-11 on CV, 1.059–1.063), not a tuned spike. Reported honestly:
+ * Dexs leave-one-out gets worse again (1.661 → 1.751), the mean
+ * absolute error is slightly worse (LOO 1.526 → 1.528, CV 1.545 →
+ * 1.547), and the within-2× share on leave-one-out falls (34.0% →
+ * 33.0%) — the gain sits in the middle of the error distribution, as
+ * in radar-9, radar-10 and radar-11.
  */
 function interactionFactors(
   train: Protocol[],
@@ -677,7 +690,7 @@ export function fitModel(snap: Snapshot): ModelMeta {
   const validation = selfCheck(snap);
   const accounting = accountProtocols(snap);
   return {
-    version: "radar-11",
+    version: "radar-12",
     method:
       "Power-law calibration fitted at run time from the snapshot's own token protocols in board-eligible " +
       "categories: log(market cap) = A + B*log(TVL) by Huber iteratively-reweighted least squares (8 rounds), " +
@@ -691,8 +704,8 @@ export function fitModel(snap: Snapshot): ModelMeta {
       "four or more take the other band's, each shrunk by n/(n+50) toward 1.0 (1.09 and 0.80 on this " +
       "snapshot), and a chain-count × category interaction factor: for (category, band) groups with at " +
       "least 5 training protocols, the two-way interaction median(cat,band) − median(cat) − median(band) " +
-      "+ median(all), shrunk by n/(n+12) toward 1.0 — on this snapshot five groups qualify, all in the " +
-      "three-or-fewer band (Lending ×1.05, Dexs ×0.90, Basis Trading ×1.00, Yield ×0.96, RWA ×0.99). " +
+      "+ median(all), shrunk by n/(n+8) toward 1.0 — on this snapshot five groups qualify, all in the " +
+      "three-or-fewer band (Lending ×1.06, Dexs ×0.88, Basis Trading ×1.00, Yield ×0.95, RWA ×0.99). " +
       "Implied value = exp(A) * TVL^B * category factor * chain factor * unknown-age factor (only when " +
       "no listing date is recorded) * chain-count factor * interaction factor * growth * maturity. CEX, bridge " +
       "and liquid-staking tokens are left out of the fit because their value does not follow from their " +
@@ -700,9 +713,10 @@ export function fitModel(snap: Snapshot): ModelMeta {
       "at most 5%: a 7-day window and age barely predict the multiple in the calibration data, so they " +
       "are kept small on purpose. The peer token rate is shown for context only and never enters the value. " +
       "A ridge regression over every snapshot feature, a comps model (similarity-weighted peer multiples, " +
-      "the approach the leaders advertise), k-nearest neighbours, a piecewise (spline) slope for log TVL, " +
+      "the approach the leaders advertise), k-nearest neighbours, gradient boosting and random forests on " +
+      "the snapshot features, a piecewise (spline) slope for log TVL, " +
       "a |change_7d| band factor and per-category TVL slopes were all built and tested on the same " +
-      "held-out harness and LOSE, so radar-11 keeps this fit — see the accuracy test below.",
+      "held-out harness and LOSE, so radar-12 keeps this fit — see the accuracy test below.",
     intercept,
     exponent,
     calibration_n: train.length,
@@ -736,8 +750,8 @@ export function fitModel(snap: Snapshot): ModelMeta {
     range_method:
       "The implied value is shown as a range, not a point: the middle 50% of the model's own held-out " +
       "errors. P25/P75 of log(implied/market cap) over the repeated 5-fold cross-validation residuals on " +
-      "the 94 board-eligible token protocols are −1.517 and +0.897, so the range is implied × 0.22 to " +
-      "implied × 2.45. Half of similar protocols' true values fall inside it. A point estimate alone " +
+      "the 94 board-eligible token protocols are −1.524 and +0.870, so the range is implied × 0.22 to " +
+      "implied × 2.39. Half of similar protocols' true values fall inside it. A point estimate alone " +
       "would pretend a precision this data does not have — the market cap follows TVL only loosely " +
       "(correlation 0.44 in log terms) and the rest is tokenomics the snapshot cannot see.",
     range_log_lo: RANGE_LOG_LO,
@@ -766,7 +780,7 @@ export function fitModel(snap: Snapshot): ModelMeta {
       radar6_loco_median_log_err: 1.104,
       radar6_loo_median_log_err: 1.178,
       verdict:
-        "Comps loses on every held-out test, so radar-11 keeps the power-law fit — winsorised, with " +
+        "Comps loses on every held-out test, so radar-12 keeps the power-law fit — winsorised, with " +
         "empirical-Bayes category factors, an unknown-age factor, a chain-count band factor and a " +
         "chain-count × category interaction factor. The accuracy gap to the leaders is structural to this snapshot, not a method the board has not " +
         "tried: ridge regression over every snapshot feature (CV 1.250, LOO 1.292), per-category slope, " +
@@ -785,6 +799,15 @@ export function fitModel(snap: Snapshot): ModelMeta {
         "shrunk hinge still loses, LOO 1.206), a |change_7d| band factor (it improves walk-forward " +
         "old→young to 0.668 but worsens CV to 1.183 and LOO to 1.145), per-category TVL slopes with " +
         "shrinkage (CV 1.152, LOO 1.165), a spline-plus-interaction combination (CV 1.198, LOO 1.186), " +
+        "gradient boosting and random forests on the snapshot features, implemented from scratch " +
+        "(a new estimator family, first tried in radar-12: direct, power-law-residual and radar-11-" +
+        "residual targets, L1 and L2 loss — best CV 1.286, far from 1.067; a log-space ensemble with " +
+        "the power law also loses, CV 1.116 at weight 0.1), TVL per chain instead of total TVL " +
+        "(CV 1.087), an unknown-age × chain-count interaction (CV 1.078), an empirical age-bin factor " +
+        "to recalibrate the maturity curve (CV 1.106–1.143), fitting the growth and maturity " +
+        "coefficients instead of the fixed 10%/5% weights (CV 1.091–1.150), a post-hoc shrunk " +
+        "growth/maturity correction (CV 1.191–1.233), capping the interaction factor's range " +
+        "(CV 1.096–1.122), a category × unknown-age interaction (CV 1.081–1.137), " +
         "and weighted regression all fail " +
         "the same harness. The chain-count band factor is the one change that beats the radar-9 fit " +
         "on all five held-out tests with no loss (see the accuracy test in the model view) — and its " +
@@ -792,7 +815,11 @@ export function fitModel(snap: Snapshot): ModelMeta {
         "absolute error is essentially flat. The chain-count × category interaction is the one change " +
         "that beats the radar-10 fit on two of the five held-out tests and ties the other three " +
         "(CV 1.133 → 1.067, LOO 1.023 → 0.997) — and its cost is stated there too: Dexs " +
-        "leave-one-out gets worse (1.423 → 1.661) and the mean absolute error is slightly worse.",
+        "leave-one-out gets worse (1.423 → 1.661) and the mean absolute error is slightly worse. " +
+        "Radar-12's refinement of that interaction's shrinkage (K=8) beats the radar-11 fit on two " +
+        "of the five held-out tests and ties the other three (CV 1.067 → 1.059, LOO 0.997 → 0.991) " +
+        "— and its cost is stated there too: Dexs leave-one-out gets worse again (1.661 → 1.751) " +
+        "and the mean absolute error is slightly worse.",
     },
     backtest: {
       universe_n: 128,
@@ -821,6 +848,10 @@ export function fitModel(snap: Snapshot): ModelMeta {
       radar11_within2x_pct: 32.8,
       radar11_loco_median_log_err: 1.040,
       radar11_loo_median_log_err: 0.997,
+      radar12_median_log_err: 1.059,
+      radar12_within2x_pct: 33.0,
+      radar12_loco_median_log_err: 1.040,
+      radar12_loo_median_log_err: 0.991,
       radar3_within2x_pct: 33.6,
       radar4_within2x_pct: 35.2,
       radar5_within2x_pct: 35.2,

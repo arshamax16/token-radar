@@ -1,7 +1,7 @@
 // Token Radar entrypoint (Node 22, standard library only).
 //
 // Reads the sealed snapshot, scores every pre-token protocol with the
-// Radar-11 model in lib/model.ts (Huber power-law fit on board-eligible
+// Radar-12 model in lib/model.ts (Huber power-law fit on board-eligible
 // token protocols + category and chain factors + unknown-age factor +
 // chain-count band factor + chain-count × category interaction factor, token odds from the
 // peers' launch record, an honest implied-value range from the model's
@@ -114,7 +114,7 @@ function main(): void {
   const v = meta.validation;
   console.log(
     `token-radar: ${snap!.protocols.length} protocols, ${watchRows} watchlist rows, ${rows.length} rows scored, ` +
-      `model radar-11 fit on ${meta.calibration_n} token protocols (A=${meta.intercept.toFixed(3)}, B=${meta.exponent.toFixed(3)}), ` +
+      `model radar-12 fit on ${meta.calibration_n} token protocols (A=${meta.intercept.toFixed(3)}, B=${meta.exponent.toFixed(3)}), ` +
       `top implied $${rows[0]!.implied_value_usd.toLocaleString("en-US")}, ` +
       `self-check CV ${v.cv_median_log_err.toFixed(3)} (within 2x ${v.cv_within2x_pct.toFixed(1)}%), ` +
       `LOO ${v.loo_median_log_err.toFixed(3)}, walk-forward old->young ${v.walk_old_young_median_log_err.toFixed(3)}`,

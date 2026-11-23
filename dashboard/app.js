@@ -254,7 +254,7 @@ function renderModel() {
     .sort((a, b) => b[1] - a[1])
     .map(([k, v2]) => `<tr><td>${esc(k)}</td><td class="num">${mult(v2)}</td></tr>`).join("");
   box.innerHTML = `
-    <h2>How the model works — radar-11</h2>
+    <h2>How the model works — radar-12</h2>
     <p>${esc(R.model.method)}</p>
     <h3>1. The power law — TVL does not buy value one-for-one</h3>
     <p>On the ${R.model.calibration_n} protocols in this snapshot that already have a token
@@ -299,7 +299,7 @@ function renderModel() {
     young halves of the snapshot. See §7 for the test and its cost. The band factor is a marginal effect,
     though: it shifts every protocol on four or more chains down by the same amount, which helps the
     over-predicted ones and hurts the ones radar-10 already predicted well — every protocol radar-10
-    hurt most moved by exactly +0.21/+0.22 log. Radar-11 asks whether the band gap differs by category:
+    hurt most moved by exactly +0.21/+0.22 log. The chain-count × category interaction asks whether the band gap differs by category:
     the chain-count × category interaction is median(cat,band) − median(cat) − median(band) + median(all)
     on the training residuals, shrunk by n/(n+${R.model.interaction_shrink_k}) toward 1.0, only for
     (category, band) groups with at least ${R.model.interaction_min_n} training protocols. On this snapshot
@@ -428,6 +428,34 @@ function renderModel() {
     radar-10 — the tails are still dominated by the five extreme outliers (rain ×743, aave-v2 ×330,
     concentrator ×174, bitway-earn ×139, obol ×81 off prediction in leave-one-out), which no
     snapshot feature can fix.</p>
+    <p>Radar-12's accuracy work, on the same strict harness. The target was leave-one-out ≤ 0.95 and
+    5-fold CV ≤ 1.05 (radar-11: LOO 0.997, CV 1.067). The headline idea was a new estimator family,
+    tried here for the first time: gradient boosting and random forests on the snapshot features,
+    implemented from scratch (no library on the machine) — shallow trees, few estimators, min-leaf,
+    row subsampling, L1 and L2 loss, direct, power-law-residual and radar-11-residual targets.
+    The best scores 5-fold CV 1.286 (random forest on power-law residuals, 100 trees of depth 3);
+    gradient boosting scores 1.289–1.368 across its variants. With 94 training protocols a tree
+    ensemble's step functions cannot beat the smooth pooled power law, and a log-space ensemble with
+    the power law also loses (CV 1.116 at weight 0.1, 1.145 at 0.2). Seven more ideas were tried and
+    all lost. TVL per chain instead of total TVL scores CV 1.087. An unknown-age × chain-count
+    interaction scores CV 1.078–1.094. An empirical age-bin factor to recalibrate the maturity curve
+    scores CV 1.106–1.143 — the 6–12-month "spike" in the residuals is two or three extreme
+    protocols (bitway-earn +4.97, flying-tulip-lend +2.66, zama +2.35), not an age effect, and the
+    2–3-year bin is equally noisy. Fitting the growth and maturity coefficients instead of the fixed
+    10%/5% weights scores CV 1.091–1.150 — the fitted maturity slope is negative (older protocols
+    price lower at the same TVL), but the joint fit generalises worse than the fixed weights. A
+    post-hoc shrunk growth/maturity correction scores CV 1.191–1.233. Capping the interaction
+    factor's range scores CV 1.096–1.122 — the full range is what wins. A category × unknown-age
+    interaction scores CV 1.081–1.137. The one change that wins is a refinement of radar-11's
+    interaction shrinkage: K=8 instead of K=12 (min_n=5 kept). It beats radar-11 on two of the five
+    held-out tests and ties the other three: CV 1.067 → 1.059, LOO 0.997 → 0.991, LOCO 1.040
+    unchanged, walk-forward old → young 0.819 and young → old 1.219 unchanged. The CV win is spread
+    across 3 of the 5 seeds (one tie, one loss), and the neighbouring grid points (K=6 and K=10 with
+    min_n=5) score CV 1.061 and 1.063 — a broad plateau, not a tuned spike. The cost is stated, not
+    hidden: Dexs leave-one-out gets worse again (1.661 → 1.751) and the mean absolute error is
+    slightly worse (LOO 1.526 → 1.528, CV 1.545 → 1.547), while the within-2× share on leave-one-out
+    falls (34.0% → 33.0%). The radar-12 target is NOT reached — LOO 0.991 against ≤ 0.95, CV 1.059
+    against ≤ 1.05 — both close but short, and the gain is small, reported as small.</p>
     <h3>8. Validation — the board answers its own checks</h3>
     <p>${esc(v.method)} On this snapshot, on the ${v.training_n} board-eligible token protocols:
     repeated 5-fold CV median |log error| ${v.cv_median_log_err.toFixed(3)} (×${Math.exp(v.cv_median_log_err).toFixed(2)}, within 2× ${v.cv_within2x_pct.toFixed(1)}%),
@@ -443,22 +471,25 @@ function renderModel() {
     radar-8 ${bt.radar8_median_log_err} (×${Math.exp(bt.radar8_median_log_err).toFixed(2)}, within 2× ${bt.radar8_within2x_pct}%),
     radar-9 ${bt.radar9_median_log_err} (×${Math.exp(bt.radar9_median_log_err).toFixed(2)}, within 2× ${bt.radar9_within2x_pct}%),
     radar-10 ${bt.radar10_median_log_err} (×${Math.exp(bt.radar10_median_log_err).toFixed(2)}, within 2× ${bt.radar10_within2x_pct}%),
-    radar-11 ${bt.radar11_median_log_err} (×${Math.exp(bt.radar11_median_log_err).toFixed(2)}, within 2× ${bt.radar11_within2x_pct}%).
+    radar-11 ${bt.radar11_median_log_err} (×${Math.exp(bt.radar11_median_log_err).toFixed(2)}, within 2× ${bt.radar11_within2x_pct}%),
+    radar-12 ${bt.radar12_median_log_err} (×${Math.exp(bt.radar12_median_log_err).toFixed(2)}, within 2× ${bt.radar12_within2x_pct}%).
     Within 2× of the real market cap:
     radar-3 ${bt.radar3_within2x_pct}%, radar-4 ${bt.radar4_within2x_pct}%, radar-5 ${bt.radar5_within2x_pct}%,
     radar-6 ${bt.radar6_within2x_pct}% (all 128) and ${bt.radar6_eligible_within2x_pct}% (eligible 94),
     radar-7 ${bt.radar7_within2x_pct}%, radar-8 ${bt.radar8_within2x_pct}%, radar-9 ${bt.radar9_within2x_pct}%,
-    radar-10 ${bt.radar10_within2x_pct}%, radar-11 ${bt.radar11_within2x_pct}%.
+    radar-10 ${bt.radar10_within2x_pct}%, radar-11 ${bt.radar11_within2x_pct}%, radar-12 ${bt.radar12_within2x_pct}%.
     A second, harder held-out test — leave-one-category-out, one whole category held out at a time:
     radar-4 ${bt.loco_radar4_median_log_err}, radar-5 ${bt.loco_radar5_median_log_err},
     radar-6 ${bt.loco_radar6_median_log_err}, radar-7 ${bt.radar7_loco_median_log_err},
     radar-8 ${bt.radar8_loco_median_log_err}, radar-9 ${bt.radar9_loco_median_log_err},
-    radar-10 ${bt.radar10_loco_median_log_err}, radar-11 ${bt.radar11_loco_median_log_err}. The radar-11 gain is
-    real but small and is reported as small: it is better than radar-10 on two of the five held-out tests and
+    radar-10 ${bt.radar10_loco_median_log_err}, radar-11 ${bt.radar11_loco_median_log_err},
+    radar-12 ${bt.radar12_loco_median_log_err}. The radar-12 gain is
+    real but small and is reported as small: it is better than radar-11 on two of the five held-out tests and
     ties the other three — but the mean absolute error is slightly worse and Dexs gets worse on its own
     test, so the gain is a median gain, not a general one.
-    The target of median |log err| ≤ 1.00 on leave-one-out and ≤ 1.10 on 5-fold CV is reached; within-2× ≥ 45%
-    is still not reached. A token's market cap follows its
+    The radar-11 target of median |log err| ≤ 1.00 on leave-one-out and ≤ 1.10 on 5-fold CV is reached;
+    the radar-12 target (≤ 0.95 on leave-one-out, ≤ 1.05 on 5-fold CV) is NOT reached — 0.991 and 1.059.
+    Within-2× ≥ 45% is still not reached. A token's market cap follows its
     TVL only loosely (correlation 0.44 in log terms); the rest is tokenomics the snapshot cannot see.
     Rejected on the same tests: ridge regression over all features (5-fold 1.250, LOO 1.292),
     empirical-Bayes factors alone (CV 1.210, LOO 1.324), winsorisation alone (CV 1.233, LOO 1.308),
@@ -471,7 +502,12 @@ function renderModel() {
     for Dexs and Lending (CV 1.185, LOO 1.112), training without the five extreme outliers (CV 1.190,
     LOO 1.153), a piecewise (spline) slope for log TVL (one knot CV 1.123 but LOO 1.147; two knots
     CV 1.155, LOO 1.168), a |change_7d| band factor (CV 1.183, LOO 1.145), per-category TVL slopes
-    (CV 1.152, LOO 1.165), a spline-plus-interaction combination (CV 1.198, LOO 1.186), and the comps approaches of §7 above.</p>
+    (CV 1.152, LOO 1.165), a spline-plus-interaction combination (CV 1.198, LOO 1.186), gradient
+    boosting and random forests on the snapshot features (best CV 1.286), TVL per chain instead of
+    total TVL (CV 1.087), an unknown-age × chain-count interaction (CV 1.078), an empirical age-bin
+    factor (CV 1.106–1.143), fitting the growth and maturity coefficients (CV 1.091–1.150), a post-hoc
+    shrunk growth/maturity correction (CV 1.191–1.233), capping the interaction factor's range
+    (CV 1.096–1.122), a category × unknown-age interaction (CV 1.081–1.137), and the comps approaches of §7 above.</p>
     <h3>9. Farm verdicts — a rule, not a feeling</h3>
     <p>FARM means implied value ≥ $20M and 7-day change ≥ −10% (${verdictCount.FARM || 0} rows).
     THIN means implied value ≥ $5M and 7-day change ≥ −25% (${verdictCount.THIN || 0} rows).
