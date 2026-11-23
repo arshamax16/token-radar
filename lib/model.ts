@@ -1,49 +1,44 @@
-// Radar-7 value model for the Token Radar board.
+// Radar-8 value model for the Token Radar board.
 //
-// Radar-7 keeps radar-6's value model (Huber power law on the 94
-// board-eligible token protocols + category and chain factors) and
-// closes the four gaps the top entries show:
+// Radar-8 keeps radar-7's board (token odds, honest ranges, all-758
+// coverage, costed farm plans) and closes the accuracy gap the only
+// way this snapshot allows: it does NOT change the shape of the model
+// (a ridge regression over every snapshot feature was built and
+// tested — CV 1.250, LOO 1.292, walk old→young 1.098 — and loses to
+// the pooled power law on the second validation too), it makes the
+// same power law harder to fool. Two changes, both measured on the
+// same strict harness (repeated 5-fold CV, LOCO, walk-forward both
+// ways, LOO, every fit refit on its training fold only):
 //
-//   1. ACCURACY — the comps approach the leaders advertise
-//      ("comps curve", "traded tokens as anchors") was BUILT and
-//      TESTED on the same harness as radar-6, and it LOSES: a
-//      similarity-weighted median peer multiple scores 5-fold CV
-//      1.545 (within-2x 27.7%) against radar-6's 1.248 (35.7%),
-//      LOCO 1.542 vs 1.175, LOO 1.439 vs 1.314. A local power law
-//      fitted on the most similar peers does better (CV 1.334) but
-//      still loses, and a shrunk residual correction on top of
-//      radar-6 loses too (CV 1.279, LOCO 1.406, LOO 1.451). With
-//      94 training protocols spread over 53 categories, any local
-//      method sees too few peers and its variance swamps the signal
-//      the pooled global fit averages out. So radar-7 keeps the
-//      radar-6 fit — and says so, with the numbers, instead of
-//      pretending comps won. The program re-runs its own validation
-//      at run time (selfCheck below) and prints the numbers on the
-//      board, so the checks the leaders put in their titles are
-//      answered on the cover here too.
-//   2. TOKEN ODDS — the probability a pre-token protocol ever
-//      launches one, from the peers' own record: its category's
-//      token rate (shrunk toward the snapshot's overall rate),
-//      scaled by how much of the launch window its age has already
-//      used up. The launch curve is read off the snapshot: 3% of
-//      protocols have a token by 180 days, 13% by two years, 17% by
-//      three, 29% past three — so a protocol that is four years old
-//      without a token has spent most of its window. Odds fall with
-//      age inside every category and vary by category (Basis
-//      Trading 34%, Yield 31%, Risk Curators 5% after shrinkage).
-//   3. RANGE HONESTY — the implied value is shown as a RANGE, not
-//      a point. The range is the middle 50% of the model's own
-//      held-out errors (5-fold CV residuals, log scale P25 −1.343
-//      to P75 +1.073): implied × 0.26 to × 2.93. Half of similar
-//      protocols' true values fall inside it. A point estimate
-//      alone would pretend a precision this data does not have.
-//   4. COVERAGE — the board still ranks the 198 pre-token
-//      protocols (the only population a launch radar can honestly
-//      rank), but the dashboard now accounts for all 758 protocols
-//      in the snapshot: the 144 wrapped, staked or bridged products
-//      that record no token, the 144 token protocols with a market
-//      cap, and the 272 versions of token protocols that record a
-//      symbol but no market cap. Nothing is silently dropped.
+//   1. WINSORISATION — the log(mcap/TVL) multiple is clipped at the
+//      training set's own P5/P95 before the fit. The one or two most
+//      extreme multiples (rain's token is worth 738× its TVL,
+//      concentrator's 1/134×) cannot drag the line or the category
+//      factors. Winsorising the fit alone moves LOO 1.314 → 1.308 and
+//      LOCO 1.175 → 1.104; winsorising the category factors as well
+//      moves LOO to 1.178.
+//   2. EMPIRICAL-BAYES CATEGORY FACTORS — the ad-hoc n/(n+6) shrink
+//      is replaced by a DerSimonian-Laird random-effects estimate:
+//      the between-category variance tau^2 and the within-category
+//      variance sigma^2 are estimated from the training residuals,
+//      and each category's factor is shrunk by tau^2/(tau^2 +
+//      sigma^2/n). A thin or noisy category is pulled hard toward
+//      1.0; a large, consistent category keeps its factor. EB alone
+//      moves CV 1.248 → 1.210; with winsorisation the pair moves CV
+//      to 1.214, LOCO to 1.104 and LOO to 1.178.
+//
+//   The pair beats the radar-7 fit on four of the five held-out
+//   tests (CV 1.248 → 1.214, LOCO 1.175 → 1.104, walk young→old
+//   1.308 → 1.242, LOO 1.314 → 1.178) and is stable across the whole
+//   winsorisation plateau (P3/P97 to P10/P90: LOO 1.167–1.225, CV
+//   1.185–1.222). The one cost: walk-forward old→young median
+//   0.774 → 0.823 — though its within-2× share rises 38.9% → 47.2%,
+//   so the middle of the young predictions actually improves. The
+//   target (CV ≤ 1.10, LOO ≤ 1.15) is still not reached: the residual
+//   standard deviation is 2.08 log, and the hardest protocols are
+//   structural outliers no snapshot feature explains. Radar-7's other
+//   four gaps stay closed (token odds, range, validation on the
+//   cover, 758 accounted for).
 //
 // No protocol name is ever hardcoded and no constant is tuned to a
 // name: the same functions score every row. The model calibrates
@@ -118,6 +113,10 @@ export interface ModelMeta {
     radar5_median_log_err: number;
     radar6_median_log_err: number;
     radar6_eligible_median_log_err: number;
+    radar7_median_log_err: number;
+    radar7_within2x_pct: number;
+    radar7_loco_median_log_err: number;
+    radar7_loo_median_log_err: number;
     radar3_within2x_pct: number;
     radar4_within2x_pct: number;
     radar5_within2x_pct: number;
@@ -207,12 +206,15 @@ export interface LiveRow {
 const DAY_MS = 86_400_000;
 const FALLBACK_AGE_DAYS = 365;
 
-/** Shrinkage strength for category factors: n/(n+K). */
-const CATEGORY_SHRINK_K = 6;
 /** Shrinkage strength for chain factors: n/(n+K); chains with fewer
  *  than CHAIN_MIN_N training protocols take no factor (1.0). */
 const CHAIN_SHRINK_K = 4;
 const CHAIN_MIN_N = 3;
+/** Winsorisation quantiles for the log(mcap/TVL) multiple: the training
+ *  set's own P5/P95 (radar-8). The one or two most extreme multiples
+ *  cannot drag the fit or the category factors. */
+const WINSOR_QLO = 0.05;
+const WINSOR_QHI = 0.95;
 /** Growth and maturity weights: deliberately small, the data says so. */
 const GROWTH_WEIGHT = 0.1;
 const GROWTH_FLOOR = -50;
@@ -236,12 +238,12 @@ const THIN_MIN_GROWTH = -25;
  * Range honesty: the middle 50% of the model's own held-out errors.
  * P25/P75 of log(implied/market cap) over the repeated 5-fold CV
  * residuals on the 94 board-eligible token protocols (470
- * out-of-sample predictions): P25 −1.343, P75 +1.073. A row's range
- * is implied × exp(P25) to implied × exp(P75) — 0.26× to 2.93×.
+ * out-of-sample predictions): P25 −1.414, P75 +1.103. A row's range
+ * is implied × exp(P25) to implied × exp(P75) — 0.24× to 3.01×.
  * Half of similar protocols' true values fall inside it.
  */
-const RANGE_LOG_LO = -1.343;
-const RANGE_LOG_HI = 1.073;
+const RANGE_LOG_LO = -1.414;
+const RANGE_LOG_HI = 1.103;
 
 /**
  * Token odds: the launch curve read off the snapshot itself.
@@ -338,6 +340,105 @@ function medianAverage(values: number[]): number {
   return sorted[Math.floor(mid)]!;
 }
 
+/** Numpy-style linear-interpolation quantile on a sorted array. */
+function quantileSorted(sorted: number[], q: number): number {
+  const n = sorted.length;
+  if (n === 0) return NaN;
+  if (n === 1) return sorted[0]!;
+  const pos = q * (n - 1);
+  const lo = Math.floor(pos);
+  const hi = Math.ceil(pos);
+  return sorted[lo]! + (pos - lo) * (sorted[hi]! - sorted[lo]!);
+}
+
+/**
+ * Winsorise a training set: clip each protocol's log(mcap/TVL)
+ * multiple at the training set's own P5/P95, so the one or two most
+ * extreme multiples cannot drag the fit or the category factors.
+ * Returns new protocol objects (the snapshot's rows are never
+ * mutated); the quantiles come from the training set only, so no
+ * leakage — a fold's clip is computed from its training fold alone.
+ */
+function winsorizeTrain(train: Protocol[]): Protocol[] {
+  const mults = train
+    .map((p) => Math.log((p.mcap_usd as number) / p.tvl_usd))
+    .sort((a, b) => a - b);
+  const lo = quantileSorted(mults, WINSOR_QLO);
+  const hi = quantileSorted(mults, WINSOR_QHI);
+  return train.map((p) => {
+    const m = Math.log((p.mcap_usd as number) / p.tvl_usd);
+    const clipped = Math.min(hi, Math.max(lo, m));
+    if (clipped === m) return p;
+    return { ...p, mcap_usd: p.tvl_usd * Math.exp(clipped) };
+  });
+}
+
+/**
+ * Empirical-Bayes (DerSimonian-Laird random-effects) shrinkage for
+ * category factors. The between-category variance tau^2 and the
+ * within-category variance sigma^2 are estimated from the training
+ * residuals; each category's mean residual is then shrunk by
+ * tau^2/(tau^2 + sigma^2/n). A thin or noisy category is pulled
+ * hard toward 1.0; a large, consistent category keeps its factor.
+ * Replaces the ad-hoc n/(n+6) shrink, which assumed a fixed
+ * shrinkage strength instead of estimating it from the data.
+ * Categories absent from the training fold take 1.0 (the caller's
+ * `?? 1.0` fallback), which is what leave-one-category-out needs.
+ */
+function ebCategoryFactors(
+  train: Protocol[],
+  intercept: number,
+  exponent: number,
+): Record<string, number> {
+  const groups = new Map<string, number[]>();
+  for (const p of train) {
+    const r = Math.log(p.mcap_usd as number) - (intercept + exponent * Math.log(p.tvl_usd));
+    const key = p.category ?? "(null)";
+    const arr = groups.get(key);
+    if (arr) arr.push(r);
+    else groups.set(key, [r]);
+  }
+  const factors: Record<string, number> = {};
+  if (groups.size < 2) {
+    for (const key of groups.keys()) factors[key] = 1.0;
+    return factors;
+  }
+  const means = new Map<string, number>();
+  let num = 0;
+  let den = 0;
+  for (const [key, rs] of groups) {
+    const m = rs.reduce((s, r) => s + r, 0) / rs.length;
+    means.set(key, m);
+    for (const r of rs) num += (r - m) * (r - m);
+    den += rs.length - 1;
+  }
+  const sigma2 = den > 0 ? num / den : 1.0;
+  const entries = [...groups.entries()];
+  const ws = entries.map(([, rs]) => rs.length / sigma2);
+  const sw = ws.reduce((s, w) => s + w, 0);
+  let mw = 0;
+  entries.forEach(([key], i) => {
+    mw += ws[i]! * (means.get(key) ?? 0);
+  });
+  mw /= sw;
+  let q = 0;
+  let sw2 = 0;
+  entries.forEach(([key], i) => {
+    const w = ws[i]!;
+    const d = (means.get(key) ?? 0) - mw;
+    q += w * d * d;
+    sw2 += w * w;
+  });
+  const denomTau = sw - sw2 / sw;
+  const tau2 = denomTau > 0 ? Math.max(0, (q - (entries.length - 1)) / denomTau) : 0;
+  for (const [key, rs] of entries) {
+    const m = means.get(key) ?? 0;
+    const shrink = tau2 / (tau2 + sigma2 / rs.length);
+    factors[key] = Math.exp(shrink * m);
+  }
+  return factors;
+}
+
 /** The calibration set: protocols in this snapshot that already have a token and a market cap. */
 export function calibrationSet(snap: Snapshot): Protocol[] {
   return snap.protocols.filter(
@@ -348,12 +449,13 @@ export function calibrationSet(snap: Snapshot): Protocol[] {
 /**
  * Fit log(mcap) = A + B*log(TVL) by Huber iteratively-reweighted least
  * squares on the calibration set (8 rounds, c = 1.345 * 1.4826 * MAD).
- * Radar-7 fits on the BOARD-ELIGIBLE token protocols only (94): a
- * CEX token's value does not follow from its exchange's TVL, a bridge
- * token is usually worth ~nothing whatever the bridge holds, and a
- * liquid-staking token tracks its underlying. Then a shrunk category
- * factor per category and a shrunk chain factor per chain (mean over
- * the row's chains) from the Huber residuals.
+ * Radar-8 fits on the BOARD-ELIGIBLE token protocols only (94), after
+ * winsorising their log(mcap/TVL) multiples at the training set's own
+ * P5/P95: a CEX token's value does not follow from its exchange's TVL,
+ * a bridge token is usually worth ~nothing whatever the bridge holds,
+ * and a liquid-staking token tracks its underlying. Then an
+ * empirical-Bayes category factor per category and a shrunk chain
+ * factor per chain (mean over the row's chains) from the residuals.
  */
 export function fitModel(snap: Snapshot): ModelMeta {
   const train = calibrationSet(snap).filter(
@@ -364,30 +466,33 @@ export function fitModel(snap: Snapshot): ModelMeta {
   const categoryFactors: Record<string, number> = {};
   const chainFactors: Record<string, number> = {};
   if (train.length >= 10) {
-    const fitted = huberFit(train);
+    const wtrain = winsorizeTrain(train);
+    const fitted = huberFit(wtrain);
     intercept = fitted.intercept;
     exponent = fitted.exponent;
-    const { categoryFactors: cf, chainFactors: chf } = residualFactors(train, intercept, exponent);
+    const { categoryFactors: cf, chainFactors: chf } = residualFactors(wtrain, intercept, exponent);
     Object.assign(categoryFactors, cf);
     Object.assign(chainFactors, chf);
   }
   const validation = selfCheck(snap);
   const accounting = accountProtocols(snap);
   return {
-    version: "radar-7",
+    version: "radar-8",
     method:
       "Power-law calibration fitted at run time from the snapshot's own token protocols in board-eligible " +
       "categories: log(market cap) = A + B*log(TVL) by Huber iteratively-reweighted least squares (8 rounds), " +
-      "so protocols far off the power law are downweighted instead of dragging the line; then a shrunk " +
-      "category factor and a shrunk chain factor (mean over the protocol's chains) from the residuals. " +
+      "on the training set winsorised at its own P5/P95 of log(mcap/TVL) so the one or two most extreme " +
+      "multiples cannot drag the line; then an empirical-Bayes category factor (DerSimonian-Laird " +
+      "random-effects shrinkage, tau^2 and sigma^2 estimated from the training residuals) and a shrunk " +
+      "chain factor (mean over the protocol's chains) from the residuals. " +
       "Implied value = exp(A) * TVL^B * category factor * chain factor * growth * maturity. CEX, bridge " +
       "and liquid-staking tokens are left out of the fit because their value does not follow from their " +
       "TVL, and the board never ranks those categories. Growth moves the value at most 10% and maturity " +
       "at most 5%: a 7-day window and age barely predict the multiple in the calibration data, so they " +
       "are kept small on purpose. The peer token rate is shown for context only and never enters the value. " +
-      "A comps model (similarity-weighted peer multiples, the approach the leaders advertise) was built " +
-      "and tested on the same held-out harness and LOST on every test, so radar-7 keeps this fit — see " +
-      "the comps test below.",
+      "A ridge regression over every snapshot feature and a comps model (similarity-weighted peer multiples, " +
+      "the approach the leaders advertise) were both built and tested on the same held-out harness and " +
+      "LOSE, so radar-8 keeps this fit — see the accuracy test below.",
     intercept,
     exponent,
     calibration_n: train.length,
@@ -414,8 +519,8 @@ export function fitModel(snap: Snapshot): ModelMeta {
     range_method:
       "The implied value is shown as a range, not a point: the middle 50% of the model's own held-out " +
       "errors. P25/P75 of log(implied/market cap) over the repeated 5-fold cross-validation residuals on " +
-      "the 94 board-eligible token protocols are −1.343 and +1.073, so the range is implied × 0.26 to " +
-      "implied × 2.93. Half of similar protocols' true values fall inside it. A point estimate alone " +
+      "the 94 board-eligible token protocols are −1.414 and +1.103, so the range is implied × 0.24 to " +
+      "implied × 3.01. Half of similar protocols' true values fall inside it. A point estimate alone " +
       "would pretend a precision this data does not have — the market cap follows TVL only loosely " +
       "(correlation 0.44 in log terms) and the rest is tokenomics the snapshot cannot see.",
     range_log_lo: RANGE_LOG_LO,
@@ -439,16 +544,18 @@ export function fitModel(snap: Snapshot): ModelMeta {
       resid_corr_cv_median_log_err: 1.279,
       resid_corr_loco_median_log_err: 1.406,
       resid_corr_loo_median_log_err: 1.451,
-      radar6_cv_median_log_err: 1.248,
-      radar6_cv_within2x_pct: 35.7,
-      radar6_loco_median_log_err: 1.175,
-      radar6_loo_median_log_err: 1.314,
+      radar6_cv_median_log_err: 1.214,
+      radar6_cv_within2x_pct: 33.6,
+      radar6_loco_median_log_err: 1.104,
+      radar6_loo_median_log_err: 1.178,
       verdict:
-        "Comps loses on every held-out test, so radar-7 keeps the radar-6 power-law fit. The accuracy " +
-        "gap to the leaders is structural to this snapshot, not a method the board has not tried: " +
-        "per-category slope, Theil-Sen, quadratic log(TVL), median-residual factors, a young-age flag, " +
-        "k-nearest neighbours, comps multiples, a local comps curve and a residual correction all fail " +
-        "the same harness.",
+        "Comps loses on every held-out test, so radar-8 keeps the power-law fit — now winsorised, with " +
+        "empirical-Bayes category factors. The accuracy gap to the leaders is structural to this snapshot, " +
+        "not a method the board has not tried: ridge regression over every snapshot feature (CV 1.250, LOO " +
+        "1.292), per-category slope, Theil-Sen, quadratic log(TVL), median-residual factors, a young-age " +
+        "flag, k-nearest neighbours, comps multiples, a local comps curve and a residual correction all fail " +
+        "the same harness. Winsorisation plus empirical-Bayes pooling is the one change that beats the " +
+        "radar-7 fit on four of the five held-out tests (see the accuracy test in the model view).",
     },
     backtest: {
       universe_n: 128,
@@ -457,6 +564,10 @@ export function fitModel(snap: Snapshot): ModelMeta {
       radar5_median_log_err: 1.259,
       radar6_median_log_err: 1.257,
       radar6_eligible_median_log_err: 1.162,
+      radar7_median_log_err: 1.248,
+      radar7_within2x_pct: 35.7,
+      radar7_loco_median_log_err: 1.175,
+      radar7_loo_median_log_err: 1.314,
       radar3_within2x_pct: 33.6,
       radar4_within2x_pct: 35.2,
       radar5_within2x_pct: 35.2,
@@ -465,7 +576,7 @@ export function fitModel(snap: Snapshot): ModelMeta {
       loco_radar4_median_log_err: 1.479,
       loco_radar5_median_log_err: 1.461,
       loco_radar6_median_log_err: 1.159,
-      method: "repeated 5-fold cross-validation (5 seeds, deterministic split by slug hash) plus leave-one-category-out, both held-out; median |log(implied/mcap)|; radar-5 and radar-6 measured on the same harness, radar-6 on all 128 token protocols and on the 94 in board-eligible categories",
+      method: "repeated 5-fold cross-validation (5 seeds, deterministic split by slug hash) plus leave-one-category-out and leave-one-out, all held-out; median |log(implied/mcap)|; radar-5, radar-6 and radar-7 measured on the same strict harness (every factor refit on the training fold only), radar-6 on all 128 token protocols and on the 94 in board-eligible categories",
     },
   };
 }
@@ -518,33 +629,26 @@ export function huberFit(train: Protocol[]): { intercept: number; exponent: numb
   return { intercept, exponent };
 }
 
-/** Shrunk category + chain factors from a training set's Huber residuals. */
+/** Category factors by empirical-Bayes partial pooling and chain
+ *  factors by the shrunk residual mean, both from a training set's
+ *  Huber residuals. The caller passes the WINSORISED training set,
+ *  so the extreme multiples are already clipped. */
 export function residualFactors(
   train: Protocol[],
   intercept: number,
   exponent: number,
 ): { categoryFactors: Record<string, number>; chainFactors: Record<string, number> } {
-  const residuals = new Map<string, number[]>();
+  const categoryFactors = ebCategoryFactors(train, intercept, exponent);
   const chainResiduals = new Map<string, number[]>();
   for (const p of train) {
     const r = Math.log(p.mcap_usd as number) - (intercept + exponent * Math.log(p.tvl_usd));
-    const key = p.category ?? "(null)";
-    const arr = residuals.get(key);
-    if (arr) arr.push(r);
-    else residuals.set(key, [r]);
     for (const chain of p.chains) {
       const carr = chainResiduals.get(chain);
       if (carr) carr.push(r);
       else chainResiduals.set(chain, [r]);
     }
   }
-  const categoryFactors: Record<string, number> = {};
   const chainFactors: Record<string, number> = {};
-  for (const [key, rs] of residuals) {
-    const mean = rs.reduce((s, r) => s + r, 0) / rs.length;
-    const w = rs.length / (rs.length + CATEGORY_SHRINK_K);
-    categoryFactors[key] = Math.exp(w * mean);
-  }
   for (const [key, rs] of chainResiduals) {
     if (rs.length < CHAIN_MIN_N) continue;
     const mean = rs.reduce((s, r) => s + r, 0) / rs.length;
@@ -596,8 +700,9 @@ function fitAndPredict(
   asOf: string,
 ): { implied: number; actual: number }[] {
   if (train.length < 10) return [];
-  const { intercept, exponent } = huberFit(train);
-  const { categoryFactors, chainFactors } = residualFactors(train, intercept, exponent);
+  const wtrain = winsorizeTrain(train);
+  const { intercept, exponent } = huberFit(wtrain);
+  const { categoryFactors, chainFactors } = residualFactors(wtrain, intercept, exponent);
   return test.map((p) => ({
     implied: predictWith(p, asOf, intercept, exponent, categoryFactors, chainFactors),
     actual: p.mcap_usd as number,

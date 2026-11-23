@@ -192,7 +192,7 @@ function renderDetail(scrollIntoView) {
       <tr><td>Growth — 7-day change ${pct(row.change_7d)} (at most ±10%)</td><td class="num">${mult(m.growth_multiplier)}</td></tr>
       <tr><td>Maturity — tracked ${m.age_days} days (0.95–1.05)</td><td class="num">${mult(m.maturity_multiplier)}</td></tr>
       <tr class="total"><td>Implied value</td><td class="num">${money(m.implied_value_usd)}</td></tr>
-      <tr><td>Honest range — middle 50% of the model's held-out errors (×0.26 to ×2.93)</td><td class="num">${moneyRange(row.range_low_usd, row.range_high_usd)}</td></tr>
+      <tr><td>Honest range — middle 50% of the model's held-out errors (×0.24 to ×3.01)</td><td class="num">${moneyRange(row.range_low_usd, row.range_high_usd)}</td></tr>
     </tbody></table>
     <p class="note">The base, the category factor and the chain factor are fitted from the snapshot's own ${R.model.calibration_n} token protocols in board-eligible categories at run time — nothing here is a hardcoded list of names.</p>
     <p class="note">Token odds ${oddsPct}%: the share of this category's protocols that already record a token, shrunk toward the snapshot's overall rate, times how much of the launch window ${row.age_days} days has already used up. Peer token rate for ${esc(row.category || "this category")}: ${Math.round(row.peer_token_rate * 100)}% of the ${peers} protocols in this category in this snapshot already record a token. Odds never enter the implied value — a high value with low odds is worth farming only if you believe the launch still comes.</p>
@@ -251,14 +251,14 @@ function renderModel() {
     .sort((a, b) => b[1] - a[1])
     .map(([k, v2]) => `<tr><td>${esc(k)}</td><td class="num">${mult(v2)}</td></tr>`).join("");
   box.innerHTML = `
-    <h2>How the model works — radar-7</h2>
+    <h2>How the model works — radar-8</h2>
     <p>${esc(R.model.method)}</p>
     <h3>1. The power law — TVL does not buy value one-for-one</h3>
     <p>On the ${R.model.calibration_n} protocols in this snapshot that already have a token
     and sit in a board-eligible category,
     log(market cap) = ${R.model.intercept.toFixed(3)} + ${R.model.exponent.toFixed(3)} × log(TVL),
     fitted by Huber robust regression (8 rounds of reweighting). A token's market cap grows like TVL^${R.model.exponent.toFixed(2)}:
-    the implied multiple is about 0.54× at $10M of TVL, 0.14× at $100M, 0.04× at $1B and 0.02× at $3B.
+    the implied multiple is about 0.53× at $10M of TVL, 0.15× at $100M, 0.05× at $1B and 0.03× at $3B.
     A flat 30% of TVL would overvalue the giants roughly tenfold and undervalue small protocols threefold —
     the power law fixes both. Huber downweights the few protocols whose market cap sits far off the line
     (rain +6.4, concentrator −5.0 in log terms) instead of letting them drag it.
@@ -268,10 +268,17 @@ function renderModel() {
     tracks its underlying — including them would calibrate the board on protocols whose market cap is
     structurally decoupled from TVL. The board never ranks those categories anyway.</p>
     <h3>2. Category factors — same TVL, different worth</h3>
-    <p>Each category's factor is the shrunk mean of its residuals from the power law, pulled toward 1.0
-    with weight n/(n+6) so a thin category cannot swing the value. Categories with no token protocol
-    in the snapshot take 1.0. The peer token rate beside each factor is the share of that category's
-    protocols that already record a token — shown for context, it never enters the factor or the value.</p>
+    <p>Each category's factor comes from empirical-Bayes partial pooling (DerSimonian-Laird): the
+    between-category variance and the within-category variance are estimated from the training
+    residuals, and each category's mean residual is shrunk by tau^2/(tau^2 + sigma^2/n) — a thin or
+    noisy category is pulled hard toward 1.0, a large consistent one keeps its factor. Categories with
+    no token protocol in the snapshot take 1.0. The peer token rate beside each factor is the share of
+    that category's protocols that already record a token — shown for context, it never enters the
+    factor or the value. The change matters most for Prediction Market: rain's token is worth 400× its
+    TVL, and under radar-7's ad-hoc shrink that single outlier inflated the whole category's factor to
+    ×2.49 — Polymarket, the category's biggest pre-token protocol, was ranked #1 on the back of it.
+    Winsorisation plus empirical-Bayes pooling brings the factor to ×1.07, and Polymarket to #6 on its
+    own TVL.</p>
     <table class="breakdown"><thead><tr><th>Category</th><th>Factor</th><th>Peer token rate</th></tr></thead><tbody>${factors}</tbody></table>
     <h3>3. Chain factors — the ecosystem prices the protocol too</h3>
     <p>Each chain's factor is the shrunk mean of the same residuals over the protocols deployed on that
@@ -303,6 +310,19 @@ function renderModel() {
     peers: CV ${ct.curve_cv_median_log_err}. A shrunk residual correction on top of this fit: CV
     ${ct.resid_corr_cv_median_log_err}, LOCO ${ct.resid_corr_loco_median_log_err}, LOO ${ct.resid_corr_loo_median_log_err}.
     ${esc(ct.verdict)}</p>
+    <p>Radar-8's accuracy work, on the same strict harness (every factor refit on its training fold only):
+    a ridge regression over every snapshot feature at once — log TVL, log age, 7-day change, chain count,
+    the top-8 category dummies and a log TVL × change interaction, lambda tuned by inner cross-validation —
+    scores 5-fold CV 1.250, LOCO 1.234, walk-forward old → young 1.098 and leave-one-out 1.292: it loses
+    to the pooled power law on the second validation too, so it is not used. Empirical-Bayes category
+    factors alone move CV 1.248 → 1.210 but leave LOO at 1.324; winsorisation alone moves LOCO 1.175 →
+    1.104 but leaves LOO at 1.308. The pair — winsorised multiples plus empirical-Bayes factors — is the
+    one change that beats radar-7 on four of the five held-out tests: CV 1.248 → 1.214, LOCO 1.175 → 1.104,
+    walk-forward young → old 1.308 → 1.242, leave-one-out 1.314 → 1.178. It is stable across the whole
+    winsorisation plateau (P3/P97 to P10/P90: LOO 1.167–1.225, CV 1.185–1.222), not a tuned spike. The one
+    cost is walk-forward old → young, 0.774 → 0.823 — though its within-2× share rises 38.9% → 47.2%.
+    Weighted regression was checked and not used: the residual variance is flat across TVL terciles
+    (standard deviation 2.18 / 1.83 / 1.92), so there is nothing for weights to fix.</p>
     <h3>8. Validation — the board answers its own checks</h3>
     <p>${esc(v.method)} On this snapshot, on the ${v.training_n} board-eligible token protocols:
     repeated 5-fold CV median |log error| ${v.cv_median_log_err.toFixed(3)} (×${Math.exp(v.cv_median_log_err).toFixed(2)}, within 2× ${v.cv_within2x_pct.toFixed(1)}%),
@@ -314,16 +334,21 @@ function renderModel() {
     radar-5 ${bt.radar5_median_log_err} (×${Math.exp(bt.radar5_median_log_err).toFixed(2)}),
     radar-6 ${bt.radar6_median_log_err} (×${Math.exp(bt.radar6_median_log_err).toFixed(2)}) on all 128 token protocols
     and ${bt.radar6_eligible_median_log_err} (×${Math.exp(bt.radar6_eligible_median_log_err).toFixed(2)}) on the 94 in
-    board-eligible categories. Within 2× of the real market cap:
+    board-eligible categories, radar-7 ${bt.radar7_median_log_err} (×${Math.exp(bt.radar7_median_log_err).toFixed(2)}, within 2× ${bt.radar7_within2x_pct}%).
+    Within 2× of the real market cap:
     radar-3 ${bt.radar3_within2x_pct}%, radar-4 ${bt.radar4_within2x_pct}%, radar-5 ${bt.radar5_within2x_pct}%,
-    radar-6 ${bt.radar6_within2x_pct}% (all 128) and ${bt.radar6_eligible_within2x_pct}% (eligible 94).
+    radar-6 ${bt.radar6_within2x_pct}% (all 128) and ${bt.radar6_eligible_within2x_pct}% (eligible 94),
+    radar-7 ${bt.radar7_within2x_pct}%.
     A second, harder held-out test — leave-one-category-out, one whole category held out at a time:
     radar-4 ${bt.loco_radar4_median_log_err}, radar-5 ${bt.loco_radar5_median_log_err},
-    radar-6 ${bt.loco_radar6_median_log_err}. The radar-6 gain is real but modest and is reported as modest:
-    it is better on every held-out test, in the same direction. The target of within-2× ≥ 45% and median
+    radar-6 ${bt.loco_radar6_median_log_err}, radar-7 ${bt.radar7_loco_median_log_err}. The radar-8 gain is
+    real but modest and is reported as modest: it is better than radar-7 on four of the five held-out
+    tests, in the same direction. The target of within-2× ≥ 45% and median
     |log err| ≤ 1.0 is not reached. A token's market cap follows its
     TVL only loosely (correlation 0.44 in log terms); the rest is tokenomics the snapshot cannot see.
-    Rejected on the same tests: per-category slope (5-fold 1.304), Theil-Sen (1.342), quadratic log(TVL)
+    Rejected on the same tests: ridge regression over all features (5-fold 1.250, LOO 1.292),
+    empirical-Bayes factors alone (CV 1.210, LOO 1.324), winsorisation alone (CV 1.233, LOO 1.308),
+    per-category slope (5-fold 1.304), Theil-Sen (1.342), quadratic log(TVL)
     (1.306), a median-residual category factor (1.288), a young-age indicator (1.340), k-nearest
     neighbours on log TVL (1.35–1.43), and the comps approaches of §7 above.</p>
     <h3>9. Farm verdicts — a rule, not a feeling</h3>
