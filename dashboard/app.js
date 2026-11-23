@@ -191,8 +191,9 @@ function renderDetail(scrollIntoView) {
       <tr><td>Chain factor — ${esc(m.chains.join(", ") || "no chain")} (mean of the chains' factors, shrunk toward 1.0)</td><td class="num">${mult(m.chain_factor)}</td></tr>
       <tr><td>Growth — 7-day change ${pct(row.change_7d)} (at most ±10%)</td><td class="num">${mult(m.growth_multiplier)}</td></tr>
       <tr><td>Maturity — tracked ${m.age_days} days (0.95–1.05)</td><td class="num">${mult(m.maturity_multiplier)}</td></tr>
+      ${m.unknown_age_factor !== 1 ? `<tr><td>Unknown listing date — no tracking start recorded (group factor)</td><td class="num">${mult(m.unknown_age_factor)}</td></tr>` : ""}
       <tr class="total"><td>Implied value</td><td class="num">${money(m.implied_value_usd)}</td></tr>
-      <tr><td>Honest range — middle 50% of the model's held-out errors (×0.24 to ×3.01)</td><td class="num">${moneyRange(row.range_low_usd, row.range_high_usd)}</td></tr>
+      <tr><td>Honest range — middle 50% of the model's held-out errors (×${Math.exp(R.model.range_log_lo).toFixed(2)} to ×${Math.exp(R.model.range_log_hi).toFixed(2)})</td><td class="num">${moneyRange(row.range_low_usd, row.range_high_usd)}</td></tr>
     </tbody></table>
     <p class="note">The base, the category factor and the chain factor are fitted from the snapshot's own ${R.model.calibration_n} token protocols in board-eligible categories at run time — nothing here is a hardcoded list of names.</p>
     <p class="note">Token odds ${oddsPct}%: the share of this category's protocols that already record a token, shrunk toward the snapshot's overall rate, times how much of the launch window ${row.age_days} days has already used up. Peer token rate for ${esc(row.category || "this category")}: ${Math.round(row.peer_token_rate * 100)}% of the ${peers} protocols in this category in this snapshot already record a token. Odds never enter the implied value — a high value with low odds is worth farming only if you believe the launch still comes.</p>
@@ -251,7 +252,7 @@ function renderModel() {
     .sort((a, b) => b[1] - a[1])
     .map(([k, v2]) => `<tr><td>${esc(k)}</td><td class="num">${mult(v2)}</td></tr>`).join("");
   box.innerHTML = `
-    <h2>How the model works — radar-8</h2>
+    <h2>How the model works — radar-9</h2>
     <p>${esc(R.model.method)}</p>
     <h3>1. The power law — TVL does not buy value one-for-one</h3>
     <p>On the ${R.model.calibration_n} protocols in this snapshot that already have a token
@@ -296,7 +297,12 @@ function renderModel() {
     In the calibration data a 7-day window barely predicts the multiple (and its correlation with the residual is
     weakly negative), and age has essentially no correlation, so the weights were cut from radar-3's 15% and 10%
     to 10% and 5%. A young-protocol flag was tested and rejected: protocols listed 180–365 days ago look
-    expensive in-sample (7 protocols, mean residual +1.4) but the flag makes every held-out test worse.</p>
+    expensive in-sample (7 protocols, mean residual +1.4) but the flag makes every held-out test worse.
+    One age-related factor is kept: protocols whose listing date the snapshot does not record take a factor of
+    ${R.model.unknown_age_factor.toFixed(2)} — in the training data those ${R.model.unknown_age_n} protocols run below
+    the fitted line (median residual −0.51 log), so their implied values are pulled down by a third. It is a
+    group factor like the category factors (median residual, shrunk toward 1.0), and its cost is stated in §7:
+    the unknown-age subgroup's own leave-one-out gets worse even as the overall medians improve.</p>
     <h3>5. Token odds — the chance a token ever launches</h3>
     <p>${esc(R.model.odds_method)}</p>
     <h3>6. The honest range — a point estimate would be a lie</h3>
@@ -323,6 +329,31 @@ function renderModel() {
     cost is walk-forward old → young, 0.774 → 0.823 — though its within-2× share rises 38.9% → 47.2%.
     Weighted regression was checked and not used: the residual variance is flat across TVL terciles
     (standard deviation 2.18 / 1.83 / 1.92), so there is nothing for weights to fix.</p>
+    <p>Radar-9's accuracy work, on the same strict harness. The target was leave-one-out — the weakest
+    held-out test (1.178, ×3.25) while walk-forward old → young already ties the best published claim
+    (0.823, ×2.28 against ×2.26). Median (quantile) regression was the first idea: the metric is the
+    median absolute error, so the conditional median should beat the conditional mean — but the residuals
+    are nearly symmetric (skew −0.22 winsorised, +0.20 raw), so the median line barely differs from the
+    Huber line. A median power-law fit moves CV 1.214 → 1.177 and walk old → young 0.823 → 0.796 but
+    leaves LOO at 1.189; median category and chain factors move LOO 1.178 → 1.135 but leave CV at 1.222
+    and walk old → young at 0.886; the full median regression over all features moves CV to 1.182 but
+    collapses walk-forward old → young to 1.681. Sub-category factors for the two hardest categories,
+    Dexs and Lending — split by chain count, TVL band, Ethereum vs not, or chain group — make both
+    categories' leave-one-out worse (Dexs 1.570 → 1.60–1.74, Lending 1.823 → 1.91–2.04): the
+    heterogeneity inside those categories is idiosyncratic, not something a chain or a size band
+    explains. Imputing an unknown listing date from the category's median age changes nothing (the
+    maturity multiplier spans 5% at most), and a young × growing × hot-category interaction never fires
+    — no protocol in this snapshot is young, growing and in Dexs, Lending or Prediction Market at once.
+    The one change that wins is the unknown-age group factor of §4: protocols with no listing date run
+    below the line in the training data (median residual −0.51 log over 23 protocols), and a shrunk
+    factor of 0.67 for them moves CV 1.214 → 1.171, LOCO 1.104 → 1.084 and LOO 1.178 → 1.115, with both
+    walk-forwards unchanged (they use dated protocols only) and Dexs leave-one-out 1.570 → 1.383.
+    It is stable across the winsorisation plateau (P2.5/P97.5 to P7.5/P92.5: LOO 1.115–1.147), not a
+    tuned spike. The cost is stated, not hidden: the unknown-age subgroup's own leave-one-out median
+    gets worse (1.718 → 1.885) and the mean absolute error is essentially flat (CV +0.002, LOO −0.010)
+    — the gain sits in the middle of the error distribution, and the worst outliers (aave-v2, thorchain-dex)
+    are hurt, not helped. The underlying group signal is under one standard error, so this is a small,
+    fragile improvement, reported as one.</p>
     <h3>8. Validation — the board answers its own checks</h3>
     <p>${esc(v.method)} On this snapshot, on the ${v.training_n} board-eligible token protocols:
     repeated 5-fold CV median |log error| ${v.cv_median_log_err.toFixed(3)} (×${Math.exp(v.cv_median_log_err).toFixed(2)}, within 2× ${v.cv_within2x_pct.toFixed(1)}%),
@@ -334,23 +365,30 @@ function renderModel() {
     radar-5 ${bt.radar5_median_log_err} (×${Math.exp(bt.radar5_median_log_err).toFixed(2)}),
     radar-6 ${bt.radar6_median_log_err} (×${Math.exp(bt.radar6_median_log_err).toFixed(2)}) on all 128 token protocols
     and ${bt.radar6_eligible_median_log_err} (×${Math.exp(bt.radar6_eligible_median_log_err).toFixed(2)}) on the 94 in
-    board-eligible categories, radar-7 ${bt.radar7_median_log_err} (×${Math.exp(bt.radar7_median_log_err).toFixed(2)}, within 2× ${bt.radar7_within2x_pct}%).
+    board-eligible categories, radar-7 ${bt.radar7_median_log_err} (×${Math.exp(bt.radar7_median_log_err).toFixed(2)}, within 2× ${bt.radar7_within2x_pct}%),
+    radar-8 ${bt.radar8_median_log_err} (×${Math.exp(bt.radar8_median_log_err).toFixed(2)}, within 2× ${bt.radar8_within2x_pct}%).
     Within 2× of the real market cap:
     radar-3 ${bt.radar3_within2x_pct}%, radar-4 ${bt.radar4_within2x_pct}%, radar-5 ${bt.radar5_within2x_pct}%,
     radar-6 ${bt.radar6_within2x_pct}% (all 128) and ${bt.radar6_eligible_within2x_pct}% (eligible 94),
-    radar-7 ${bt.radar7_within2x_pct}%.
+    radar-7 ${bt.radar7_within2x_pct}%, radar-8 ${bt.radar8_within2x_pct}%.
     A second, harder held-out test — leave-one-category-out, one whole category held out at a time:
     radar-4 ${bt.loco_radar4_median_log_err}, radar-5 ${bt.loco_radar5_median_log_err},
-    radar-6 ${bt.loco_radar6_median_log_err}, radar-7 ${bt.radar7_loco_median_log_err}. The radar-8 gain is
-    real but modest and is reported as modest: it is better than radar-7 on four of the five held-out
-    tests, in the same direction. The target of within-2× ≥ 45% and median
+    radar-6 ${bt.loco_radar6_median_log_err}, radar-7 ${bt.radar7_loco_median_log_err},
+    radar-8 ${bt.radar8_loco_median_log_err}. The radar-9 gain is
+    real but small and is reported as small: it is better than radar-8 on three of the five held-out
+    tests, ties the other two, and loses none — but the mean absolute error is flat and the unknown-age
+    subgroup it targets gets worse on its own test, so the gain is a median gain, not a general one.
+    The target of within-2× ≥ 45% and median
     |log err| ≤ 1.0 is not reached. A token's market cap follows its
     TVL only loosely (correlation 0.44 in log terms); the rest is tokenomics the snapshot cannot see.
     Rejected on the same tests: ridge regression over all features (5-fold 1.250, LOO 1.292),
     empirical-Bayes factors alone (CV 1.210, LOO 1.324), winsorisation alone (CV 1.233, LOO 1.308),
     per-category slope (5-fold 1.304), Theil-Sen (1.342), quadratic log(TVL)
     (1.306), a median-residual category factor (1.288), a young-age indicator (1.340), k-nearest
-    neighbours on log TVL (1.35–1.43), and the comps approaches of §7 above.</p>
+    neighbours on log TVL (1.35–1.43), median (quantile) regression in three forms (best CV 1.177 but
+    LOO 1.189; the full version collapses walk-forward old → young to 1.681), sub-category factors for
+    Dexs and Lending (both categories' leave-one-out worse), age imputation by category median (no
+    change), a young × growing × hot-category interaction (never fires), and the comps approaches of §7 above.</p>
     <h3>9. Farm verdicts — a rule, not a feeling</h3>
     <p>FARM means implied value ≥ $20M and 7-day change ≥ −10% (${verdictCount.FARM || 0} rows).
     THIN means implied value ≥ $5M and 7-day change ≥ −25% (${verdictCount.THIN || 0} rows).

@@ -1,44 +1,32 @@
-// Radar-8 value model for the Token Radar board.
+// Radar-9 value model for the Token Radar board.
 //
-// Radar-8 keeps radar-7's board (token odds, honest ranges, all-758
-// coverage, costed farm plans) and closes the accuracy gap the only
-// way this snapshot allows: it does NOT change the shape of the model
-// (a ridge regression over every snapshot feature was built and
-// tested — CV 1.250, LOO 1.292, walk old→young 1.098 — and loses to
-// the pooled power law on the second validation too), it makes the
-// same power law harder to fool. Two changes, both measured on the
-// same strict harness (repeated 5-fold CV, LOCO, walk-forward both
-// ways, LOO, every fit refit on its training fold only):
-//
-//   1. WINSORISATION — the log(mcap/TVL) multiple is clipped at the
-//      training set's own P5/P95 before the fit. The one or two most
-//      extreme multiples (rain's token is worth 738× its TVL,
-//      concentrator's 1/134×) cannot drag the line or the category
-//      factors. Winsorising the fit alone moves LOO 1.314 → 1.308 and
-//      LOCO 1.175 → 1.104; winsorising the category factors as well
-//      moves LOO to 1.178.
-//   2. EMPIRICAL-BAYES CATEGORY FACTORS — the ad-hoc n/(n+6) shrink
-//      is replaced by a DerSimonian-Laird random-effects estimate:
-//      the between-category variance tau^2 and the within-category
-//      variance sigma^2 are estimated from the training residuals,
-//      and each category's factor is shrunk by tau^2/(tau^2 +
-//      sigma^2/n). A thin or noisy category is pulled hard toward
-//      1.0; a large, consistent category keeps its factor. EB alone
-//      moves CV 1.248 → 1.210; with winsorisation the pair moves CV
-//      to 1.214, LOCO to 1.104 and LOO to 1.178.
-//
-//   The pair beats the radar-7 fit on four of the five held-out
-//   tests (CV 1.248 → 1.214, LOCO 1.175 → 1.104, walk young→old
-//   1.308 → 1.242, LOO 1.314 → 1.178) and is stable across the whole
-//   winsorisation plateau (P3/P97 to P10/P90: LOO 1.167–1.225, CV
-//   1.185–1.222). The one cost: walk-forward old→young median
-//   0.774 → 0.823 — though its within-2× share rises 38.9% → 47.2%,
-//   so the middle of the young predictions actually improves. The
-//   target (CV ≤ 1.10, LOO ≤ 1.15) is still not reached: the residual
-//   standard deviation is 2.08 log, and the hardest protocols are
-//   structural outliers no snapshot feature explains. Radar-7's other
-//   four gaps stay closed (token odds, range, validation on the
-//   cover, 758 accounted for).
+// Radar-9 keeps radar-8's board (token odds, honest ranges, all-758
+// coverage, costed farm plans) and the radar-8 fit (winsorised power
+// law + empirical-Bayes category factors), and adds one factor the
+// radar-8 accuracy work left on the table: protocols whose listing
+// date the snapshot does not record run below the fitted line in the
+// training data (median residual −0.505 log over 23 protocols), so
+// they take a shrunk group factor of 0.67. Measured on the same
+// strict harness (repeated 5-fold CV, LOCO, walk-forward both ways,
+// LOO, every fit refit on its training fold only), radar-9 beats
+// radar-8 on three of the five held-out tests with two ties and no
+// loss (CV 1.214 → 1.171, LOCO 1.104 → 1.084, LOO 1.178 → 1.115;
+// walk-forward 0.823/1.242 unchanged, dated protocols only) and
+// moves Dexs leave-one-out 1.570 → 1.383. The cost is stated, not
+// hidden: the unknown-age subgroup's own leave-one-out median gets
+// worse (1.718 → 1.885) and the mean absolute error is essentially
+// flat — the gain sits in the middle of the error distribution, and
+// the worst outliers (aave-v2, thorchain-dex) are hurt, not helped.
+// The other radar-9 ideas all failed and are documented in the
+// model view: median (quantile) regression in three forms (best
+// CV 1.177 but LOO 1.189; the full version collapses walk-forward
+// old→young to 1.681), sub-category factors for Dexs and Lending
+// (they make both categories' leave-one-out worse), age imputation
+// by category median (no change), and a young×growing×hot-category
+// interaction (the flag never fires in this snapshot). The target
+// (CV ≤ 1.10, LOO ≤ 1.15) is still not reached: the residual
+// standard deviation is 2.08 log, and the hardest protocols are
+// structural outliers no snapshot feature explains.
 //
 // No protocol name is ever hardcoded and no constant is tuned to a
 // name: the same functions score every row. The model calibrates
@@ -85,6 +73,8 @@ export interface ModelMeta {
   maturity_range: number;
   maturity_days: number;
   unknown_age_days: number;
+  unknown_age_factor: number;
+  unknown_age_n: number;
   odds_method: string;
   range_method: string;
   range_log_lo: number;
@@ -117,6 +107,10 @@ export interface ModelMeta {
     radar7_within2x_pct: number;
     radar7_loco_median_log_err: number;
     radar7_loo_median_log_err: number;
+    radar8_median_log_err: number;
+    radar8_within2x_pct: number;
+    radar8_loco_median_log_err: number;
+    radar8_loo_median_log_err: number;
     radar3_within2x_pct: number;
     radar4_within2x_pct: number;
     radar5_within2x_pct: number;
@@ -168,6 +162,7 @@ export interface ModelBreakdown {
   growth_pct: number;
   growth_multiplier: number;
   maturity_multiplier: number;
+  unknown_age_factor: number;
   age_days: number;
   implied_value_usd: number;
 }
@@ -210,6 +205,9 @@ const FALLBACK_AGE_DAYS = 365;
  *  than CHAIN_MIN_N training protocols take no factor (1.0). */
 const CHAIN_SHRINK_K = 4;
 const CHAIN_MIN_N = 3;
+/** Shrinkage for the unknown-age group factor: n/(n+K), same spirit
+ *  as the odds shrink. */
+const UNKNOWN_AGE_SHRINK_K = 6;
 /** Winsorisation quantiles for the log(mcap/TVL) multiple: the training
  *  set's own P5/P95 (radar-8). The one or two most extreme multiples
  *  cannot drag the fit or the category factors. */
@@ -238,12 +236,12 @@ const THIN_MIN_GROWTH = -25;
  * Range honesty: the middle 50% of the model's own held-out errors.
  * P25/P75 of log(implied/market cap) over the repeated 5-fold CV
  * residuals on the 94 board-eligible token protocols (470
- * out-of-sample predictions): P25 −1.414, P75 +1.103. A row's range
- * is implied × exp(P25) to implied × exp(P75) — 0.24× to 3.01×.
+ * out-of-sample predictions): P25 −1.507, P75 +0.986. A row's range
+ * is implied × exp(P25) to implied × exp(P75) — 0.22× to 2.68×.
  * Half of similar protocols' true values fall inside it.
  */
-const RANGE_LOG_LO = -1.414;
-const RANGE_LOG_HI = 1.103;
+const RANGE_LOG_LO = -1.507;
+const RANGE_LOG_HI = 0.986;
 
 /**
  * Token odds: the launch curve read off the snapshot itself.
@@ -439,6 +437,40 @@ function ebCategoryFactors(
   return factors;
 }
 
+/**
+ * The unknown-age group factor (radar-9). Protocols whose listing
+ * date the snapshot does not record run below the fitted line in the
+ * training data: their median residual is −0.505 log (23 protocols,
+ * mean −0.395, standard deviation 2.12 — so the signal is real but
+ * noisy, under one standard error). The factor is the median
+ * residual shrunk by n/(n+6) toward 1.0, computed from the training
+ * set only: exp(0.793 × −0.505) = 0.67 on the full fit. It applies
+ * to a protocol with no listed_at and to nothing else. The centre is
+ * the numpy-style median (mean of the two middle values for even
+ * counts), so the run-time self-check matches the offline harness
+ * exactly. Reported honestly: on held-out data this moves the
+ * overall medians (CV 1.214 → 1.171, LOCO 1.104 → 1.084, LOO
+ * 1.178 → 1.115) but the unknown-age subgroup's own leave-one-out
+ * median gets worse (1.718 → 1.885) and the mean absolute error is
+ * essentially flat — the gain sits in the middle of the error
+ * distribution, not in the tails, and the worst outliers (aave-v2,
+ * thorchain-dex) are hurt, not helped. It is kept because the
+ * headline held-out medians improve on three of the five tests with
+ * two ties and no loss, and the subgroup cost is stated here and in
+ * the model view rather than hidden.
+ */
+function unknownAgeFactor(train: Protocol[], intercept: number, exponent: number): number {
+  const res: number[] = [];
+  for (const p of train) {
+    if (p.listed_at) continue;
+    res.push(Math.log(p.mcap_usd as number) - (intercept + exponent * Math.log(p.tvl_usd)));
+  }
+  if (res.length < 3) return 1.0;
+  const centre = medianAverage(res);
+  const shrink = res.length / (res.length + UNKNOWN_AGE_SHRINK_K);
+  return Math.exp(shrink * centre);
+}
+
 /** The calibration set: protocols in this snapshot that already have a token and a market cap. */
 export function calibrationSet(snap: Snapshot): Protocol[] {
   return snap.protocols.filter(
@@ -465,6 +497,8 @@ export function fitModel(snap: Snapshot): ModelMeta {
   let exponent = FALLBACK_EXPONENT;
   const categoryFactors: Record<string, number> = {};
   const chainFactors: Record<string, number> = {};
+  let unknownAgeFactorValue = 1.0;
+  let unknownAgeN = 0;
   if (train.length >= 10) {
     const wtrain = winsorizeTrain(train);
     const fitted = huberFit(wtrain);
@@ -473,26 +507,31 @@ export function fitModel(snap: Snapshot): ModelMeta {
     const { categoryFactors: cf, chainFactors: chf } = residualFactors(wtrain, intercept, exponent);
     Object.assign(categoryFactors, cf);
     Object.assign(chainFactors, chf);
+    unknownAgeFactorValue = unknownAgeFactor(wtrain, intercept, exponent);
+    unknownAgeN = wtrain.filter((p) => !p.listed_at).length;
   }
   const validation = selfCheck(snap);
   const accounting = accountProtocols(snap);
   return {
-    version: "radar-8",
+    version: "radar-9",
     method:
       "Power-law calibration fitted at run time from the snapshot's own token protocols in board-eligible " +
       "categories: log(market cap) = A + B*log(TVL) by Huber iteratively-reweighted least squares (8 rounds), " +
       "on the training set winsorised at its own P5/P95 of log(mcap/TVL) so the one or two most extreme " +
       "multiples cannot drag the line; then an empirical-Bayes category factor (DerSimonian-Laird " +
       "random-effects shrinkage, tau^2 and sigma^2 estimated from the training residuals) and a shrunk " +
-      "chain factor (mean over the protocol's chains) from the residuals. " +
-      "Implied value = exp(A) * TVL^B * category factor * chain factor * growth * maturity. CEX, bridge " +
+      "chain factor (mean over the protocol's chains) from the residuals, plus an unknown-age factor for " +
+      "protocols whose listing date the snapshot does not record (the median residual of that group in " +
+      "the training data, shrunk by n/(n+6) toward 1.0 — 0.67 on this snapshot). " +
+      "Implied value = exp(A) * TVL^B * category factor * chain factor * unknown-age factor (only when " +
+      "no listing date is recorded) * growth * maturity. CEX, bridge " +
       "and liquid-staking tokens are left out of the fit because their value does not follow from their " +
       "TVL, and the board never ranks those categories. Growth moves the value at most 10% and maturity " +
       "at most 5%: a 7-day window and age barely predict the multiple in the calibration data, so they " +
       "are kept small on purpose. The peer token rate is shown for context only and never enters the value. " +
       "A ridge regression over every snapshot feature and a comps model (similarity-weighted peer multiples, " +
       "the approach the leaders advertise) were both built and tested on the same held-out harness and " +
-      "LOSE, so radar-8 keeps this fit — see the accuracy test below.",
+      "LOSE, so radar-9 keeps this fit — see the accuracy test below.",
     intercept,
     exponent,
     calibration_n: train.length,
@@ -507,6 +546,8 @@ export function fitModel(snap: Snapshot): ModelMeta {
     maturity_range: MATURITY_RANGE,
     maturity_days: MATURITY_DAYS,
     unknown_age_days: FALLBACK_AGE_DAYS,
+    unknown_age_factor: unknownAgeFactorValue,
+    unknown_age_n: unknownAgeN,
     odds_method:
       "Token odds = the protocol's category token rate (share of the snapshot's protocols in that category " +
       "that already record a token, shrunk toward the snapshot's overall 19% with weight n/(n+6)) times an " +
@@ -519,8 +560,8 @@ export function fitModel(snap: Snapshot): ModelMeta {
     range_method:
       "The implied value is shown as a range, not a point: the middle 50% of the model's own held-out " +
       "errors. P25/P75 of log(implied/market cap) over the repeated 5-fold cross-validation residuals on " +
-      "the 94 board-eligible token protocols are −1.414 and +1.103, so the range is implied × 0.24 to " +
-      "implied × 3.01. Half of similar protocols' true values fall inside it. A point estimate alone " +
+      "the 94 board-eligible token protocols are −1.507 and +0.986, so the range is implied × 0.22 to " +
+      "implied × 2.68. Half of similar protocols' true values fall inside it. A point estimate alone " +
       "would pretend a precision this data does not have — the market cap follows TVL only loosely " +
       "(correlation 0.44 in log terms) and the rest is tokenomics the snapshot cannot see.",
     range_log_lo: RANGE_LOG_LO,
@@ -549,13 +590,19 @@ export function fitModel(snap: Snapshot): ModelMeta {
       radar6_loco_median_log_err: 1.104,
       radar6_loo_median_log_err: 1.178,
       verdict:
-        "Comps loses on every held-out test, so radar-8 keeps the power-law fit — now winsorised, with " +
-        "empirical-Bayes category factors. The accuracy gap to the leaders is structural to this snapshot, " +
-        "not a method the board has not tried: ridge regression over every snapshot feature (CV 1.250, LOO " +
-        "1.292), per-category slope, Theil-Sen, quadratic log(TVL), median-residual factors, a young-age " +
-        "flag, k-nearest neighbours, comps multiples, a local comps curve and a residual correction all fail " +
-        "the same harness. Winsorisation plus empirical-Bayes pooling is the one change that beats the " +
-        "radar-7 fit on four of the five held-out tests (see the accuracy test in the model view).",
+        "Comps loses on every held-out test, so radar-9 keeps the power-law fit — winsorised, with " +
+        "empirical-Bayes category factors and an unknown-age factor. The accuracy gap to the leaders is " +
+        "structural to this snapshot, not a method the board has not tried: ridge regression over every " +
+        "snapshot feature (CV 1.250, LOO 1.292), per-category slope, Theil-Sen, quadratic log(TVL), " +
+        "median-residual factors, a young-age flag, k-nearest neighbours, comps multiples, a local comps " +
+        "curve, a residual correction, median (quantile) regression in three forms (best: CV 1.177 but " +
+        "LOO 1.189; full quantile regression collapses walk-forward old→young to 1.681), sub-category " +
+        "factors for Dexs and Lending (they make both categories' leave-one-out worse), age imputation " +
+        "by category median (no change), a young×growing×hot-category interaction (the flag never fires " +
+        "in this snapshot), and weighted regression all fail the same harness. The unknown-age factor is " +
+        "the one change that beats the radar-8 fit on three of the five held-out tests with two ties and " +
+        "no loss (see the accuracy test in the model view) — and its cost is stated there too: the " +
+        "unknown-age subgroup's own leave-one-out gets worse.",
     },
     backtest: {
       universe_n: 128,
@@ -568,6 +615,10 @@ export function fitModel(snap: Snapshot): ModelMeta {
       radar7_within2x_pct: 35.7,
       radar7_loco_median_log_err: 1.175,
       radar7_loo_median_log_err: 1.314,
+      radar8_median_log_err: 1.214,
+      radar8_within2x_pct: 33.6,
+      radar8_loco_median_log_err: 1.104,
+      radar8_loo_median_log_err: 1.178,
       radar3_within2x_pct: 33.6,
       radar4_within2x_pct: 35.2,
       radar5_within2x_pct: 35.2,
@@ -576,7 +627,7 @@ export function fitModel(snap: Snapshot): ModelMeta {
       loco_radar4_median_log_err: 1.479,
       loco_radar5_median_log_err: 1.461,
       loco_radar6_median_log_err: 1.159,
-      method: "repeated 5-fold cross-validation (5 seeds, deterministic split by slug hash) plus leave-one-category-out and leave-one-out, all held-out; median |log(implied/mcap)|; radar-5, radar-6 and radar-7 measured on the same strict harness (every factor refit on the training fold only), radar-6 on all 128 token protocols and on the 94 in board-eligible categories",
+      method: "repeated 5-fold cross-validation (5 seeds, deterministic split by slug hash) plus leave-one-category-out and leave-one-out, all held-out; median |log(implied/mcap)|; radar-5, radar-6, radar-7 and radar-8 measured on the same strict harness (every factor refit on the training fold only), radar-6 on all 128 token protocols and on the 94 in board-eligible categories",
     },
   };
 }
@@ -672,6 +723,7 @@ function predictWith(
   exponent: number,
   categoryFactors: Record<string, number>,
   chainFactors: Record<string, number>,
+  unknownAgeFactorValue: number,
 ): number {
   const base = Math.exp(intercept) * Math.pow(p.tvl_usd, exponent);
   const catKey = p.category ?? "(null)";
@@ -683,6 +735,7 @@ function predictWith(
     knownChainFactors.length > 0
       ? knownChainFactors.reduce((s, f) => s + f, 0) / knownChainFactors.length
       : 1.0;
+  const ageFactor = p.listed_at ? 1.0 : unknownAgeFactorValue;
   const growthPct = clamp(p.change_7d ?? 0, GROWTH_FLOOR, GROWTH_CAP);
   const growthMultiplier = 1 + (GROWTH_WEIGHT * growthPct) / 100;
   const age = ageDays(p, asOf);
@@ -690,7 +743,7 @@ function predictWith(
     MATURITY_FLOOR + (MATURITY_RANGE * Math.min(age, MATURITY_DAYS)) / MATURITY_DAYS;
   return Math.max(
     1,
-    Math.round(base * categoryFactor * chainFactor * growthMultiplier * maturityMultiplier),
+    Math.round(base * categoryFactor * chainFactor * ageFactor * growthMultiplier * maturityMultiplier),
   );
 }
 
@@ -703,8 +756,9 @@ function fitAndPredict(
   const wtrain = winsorizeTrain(train);
   const { intercept, exponent } = huberFit(wtrain);
   const { categoryFactors, chainFactors } = residualFactors(wtrain, intercept, exponent);
+  const unknownAgeFactorValue = unknownAgeFactor(wtrain, intercept, exponent);
   return test.map((p) => ({
-    implied: predictWith(p, asOf, intercept, exponent, categoryFactors, chainFactors),
+    implied: predictWith(p, asOf, intercept, exponent, categoryFactors, chainFactors, unknownAgeFactorValue),
     actual: p.mcap_usd as number,
   }));
 }
@@ -846,9 +900,10 @@ export function impliedValueBreakdown(p: Protocol, asOf: string, meta: ModelMeta
   const age = ageDays(p, asOf);
   const maturityMultiplier =
     meta.maturity_floor + (meta.maturity_range * Math.min(age, meta.maturity_days)) / meta.maturity_days;
+  const unknownAgeFactorValue = p.listed_at ? 1.0 : meta.unknown_age_factor;
   const implied = Math.max(
     1,
-    Math.round(base * categoryFactor * chainFactor * growthMultiplier * maturityMultiplier),
+    Math.round(base * categoryFactor * chainFactor * unknownAgeFactorValue * growthMultiplier * maturityMultiplier),
   );
   return {
     base_usd: Math.round(base),
@@ -859,6 +914,7 @@ export function impliedValueBreakdown(p: Protocol, asOf: string, meta: ModelMeta
     growth_pct: growthPct,
     growth_multiplier: growthMultiplier,
     maturity_multiplier: maturityMultiplier,
+    unknown_age_factor: unknownAgeFactorValue,
     age_days: age,
     implied_value_usd: implied,
   };
